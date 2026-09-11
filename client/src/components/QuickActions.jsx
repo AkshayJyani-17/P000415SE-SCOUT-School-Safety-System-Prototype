@@ -181,7 +181,7 @@ export default function QuickActions() {
         body: JSON.stringify({
           code: '000',
           emergencyType: selectedAction2Type.value,
-          location: editForm.location || '',
+          location: 'Dashboard quick action',
           message: `${selectedAction2Type.label} quick action triggered from dashboard.`,
           incidentId,
           incidentTitle: `${selectedAction2Type.label} alert`,

@@ -131,20 +131,20 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
         }
       }
 
-if (name === 'counters') {
-  return {
-    doc(id) {
-      return {
-        id,
-        async get() {
-          return makeDoc(id, counterStore.get(id))
-        },
+      if (name === 'counters') {
+        return {
+          doc(id) {
+            return {
+              id,
+              async get() {
+                return makeDoc(id, counterStore.get(id))
+              },
+            }
+          },
+        }
       }
-    },
-  }
-}
 
-            throw new Error(`Unexpected collection: ${name}`)
+      throw new Error(`Unexpected collection: ${name}`)
     },
 
     async runTransaction(callback) {
@@ -175,6 +175,7 @@ if (name === 'counters') {
     },
   }
 }
+
 const firebasePath = require.resolve('../src/db/firebase')
 const incidentsRoutePath = require.resolve('../src/routes/incidents')
 const firebaseAdminPath = require.resolve('firebase-admin')

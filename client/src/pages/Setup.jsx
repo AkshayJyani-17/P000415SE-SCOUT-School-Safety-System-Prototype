@@ -35,24 +35,24 @@ function formatRole(role) {
 
 export default function Setup() {
   const { isCompanyAdmin, isSchoolAdmin } = useAuth()
-const navigate = useNavigate()
+  const navigate = useNavigate()
 
-const {
-  allSchools,
-  loading: schoolsLoading,
-  error: schoolsError,
-  createSchool,
-  renameSchool,
-  setSchoolActive,
-} = useSchools()
+  const {
+    allSchools,
+    loading: schoolsLoading,
+    error: schoolsError,
+    createSchool,
+    renameSchool,
+    setSchoolActive,
+  } = useSchools()
 
-// Schools (Company Admin)
-const [newSchoolName, setNewSchoolName] = useState('')
-const [addingSchool, setAddingSchool] = useState(false)
-const [schoolFormError, setSchoolFormError] = useState('')
-const [editingSchoolId, setEditingSchoolId] = useState(null)
-const [editSchoolName, setEditSchoolName] = useState('')
-const [savingSchoolId, setSavingSchoolId] = useState(null)
+  // ── Schools (Company Admin) ───────────────────────────────────────────────
+  const [newSchoolName, setNewSchoolName] = useState('')
+  const [addingSchool, setAddingSchool] = useState(false)
+  const [schoolFormError, setSchoolFormError] = useState('')
+  const [editingSchoolId, setEditingSchoolId] = useState(null)
+  const [editSchoolName, setEditSchoolName] = useState('')
+  const [savingSchoolId, setSavingSchoolId] = useState(null)
 
   const [alertTypes, setAlertTypes] = useState([])
   const [locations, setLocations] = useState([])

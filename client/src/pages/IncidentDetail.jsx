@@ -55,35 +55,6 @@ function extractUsersFromHistory(history, statuses) {
     .filter(Boolean))]
 }
 
-function getProgressUsers(record) {
-  const acknowledged = normalizeUsers([
-    ...(record?.acknowledgedUsers || []),
-    ...(record?.acknowledgedBy || []),
-    ...(record?.ackUsers || []),
-    ...(record?.acknowledgements || []),
-  ])
-  const acknowledgedFromHistory = extractUsersFromHistory(
-    record?.statusHistory,
-    ['acknowledged']
-  )
-
-  const inProgress = normalizeUsers([
-    ...(record?.inProgressUsers || []),
-    ...(record?.inProgressBy || []),
-    ...(record?.workingUsers || []),
-    ...(record?.responders || []),
-  ])
-  const inProgressFromHistory = extractUsersFromHistory(
-    record?.statusHistory,
-    ['in-progress', 'in_progress']
-  )
-
-  return {
-    acknowledgedUsers: [...new Set([...acknowledged, ...acknowledgedFromHistory])],
-    inProgressUsers: [...new Set([...inProgress, ...inProgressFromHistory])],
-  }
-}
-
 const priorityColors = {
   critical: 'bg-red-100 text-red-700',
   high: 'bg-orange-100 text-orange-700',

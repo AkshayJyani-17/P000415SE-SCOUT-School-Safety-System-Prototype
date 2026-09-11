@@ -68,7 +68,7 @@ function SubmitRoute({ children }) {
     return null
   }
 
-  if (!isSchoolAdmin && !isStaff  && !isCompanyAdmin) {
+  if (!isSchoolAdmin && !isStaff && !isCompanyAdmin) {
     return <Navigate to="/dashboard" replace />
   }
 
@@ -76,7 +76,8 @@ function SubmitRoute({ children }) {
 }
 
 // ── NotCompanyAdminRoute ──────────────────────────────────────────────────────
-// Redirects Company Admins to /setup. All other pages are for School Admin / Staff.
+// Waits for the user's role to load before rendering. Company Admins are no
+// longer redirected to /setup and can open these pages as well.
 function NotCompanyAdminRoute({ children }) {
   const { authLoading, userRole } = useAuth()
 

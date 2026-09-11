@@ -1,4 +1,8 @@
+import { useState } from 'react'
+
 export default function SchoolAdminStatus({ incidents }) {
+  // Captured once on mount so the "this week" window stays stable across re-renders
+  const [now] = useState(() => Date.now())
   const active      = incidents.filter(i => i.status !== 'archived' && i.status !== 'resolved')
   const acknowledged = active.filter(i => i.status !== 'triggered')
   // Match analytics definition: no acknowledgedBy entries and not resolved/archived
@@ -7,7 +11,7 @@ export default function SchoolAdminStatus({ incidents }) {
     i.status !== 'resolved' &&
     i.status !== 'archived'
   )
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+  const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000)
   const resolved = incidents.filter(i => {
     if (i.status !== 'resolved') return false
     const d = i.updatedAt ? new Date(i.updatedAt) : null
