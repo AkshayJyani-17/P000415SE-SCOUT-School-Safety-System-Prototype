@@ -90,12 +90,19 @@ export default function Setup() {
   const [editingEmailValue, setEditingEmailValue] = useState('')
   const [emailError, setEmailError] = useState('')
 
-  const [overdueThreshold, setOverdueThreshold] = useState(15)
   const [retentionDays, setRetentionDays] = useState(30)
   const [thresholdLoading, setThresholdLoading] = useState(true)
   const [thresholdSaving, setThresholdSaving] = useState(false)
   const [thresholdError, setThresholdError] = useState('')
   const [thresholdSuccess, setThresholdSuccess] = useState(false)
+
+  // Alert-timeout (overdue) duration, configured per-school by School Admins.
+  // The company-wide value is shown only as a reference.
+  const [companyOverdueThreshold, setCompanyOverdueThreshold] = useState(15)
+  const [schoolThreshold, setSchoolThreshold] = useState('')
+  const [schoolThresholdSaving, setSchoolThresholdSaving] = useState(false)
+  const [schoolThresholdError, setSchoolThresholdError] = useState('')
+  const [schoolThresholdSuccess, setSchoolThresholdSuccess] = useState(false)
 
   // Archive now state
   const [archiving, setArchiving] = useState(false)
@@ -156,8 +163,16 @@ export default function Setup() {
     async function loadSettings() {
       try {
         const data = await settingsAPI.get()
-        setOverdueThreshold(data.overdueThresholdMinutes ?? 15)
         setRetentionDays(data.archiveRetentionDays ?? 30)
+        setCompanyOverdueThreshold(
+          data.companyOverdueThresholdMinutes ?? data.overdueThresholdMinutes ?? 15
+        )
+        // Empty input means "use the company default"; a value means an active school override.
+        setSchoolThreshold(
+          data.schoolOverdueThresholdMinutes != null
+            ? String(data.schoolOverdueThresholdMinutes)
+            : ''
+        )
       } catch (err) {
         console.error('Failed to load settings:', err)
       } finally {
@@ -165,12 +180,12 @@ export default function Setup() {
       }
     }
 
-    if (isCompanyAdmin) {
+    if (isCompanyAdmin || isSchoolAdmin) {
       loadSettings()
     } else {
       setThresholdLoading(false)
     }
-  }, [isCompanyAdmin])
+  }, [isCompanyAdmin, isSchoolAdmin])
 
   const handleAddType = async () => {
     if (!newType.label.trim()) {
@@ -429,14 +444,7 @@ export default function Setup() {
     setThresholdError('')
     setThresholdSuccess(false)
 
-    const parsedThreshold = parseInt(overdueThreshold, 10)
     const parsedRetention = parseInt(retentionDays, 10)
-
-    if (!Number.isInteger(parsedThreshold) || parsedThreshold < 1 || parsedThreshold > 1440) {
-      setThresholdError('Threshold must be a whole number between 1 and 1440 minutes.')
-      setThresholdSaving(false)
-      return
-    }
 
     if (!Number.isInteger(parsedRetention) || parsedRetention < 1 || parsedRetention > 365) {
       setThresholdError('Retention period must be a whole number between 1 and 365 days.')
@@ -445,11 +453,7 @@ export default function Setup() {
     }
 
     try {
-      await settingsAPI.update({
-        overdueThresholdMinutes: parsedThreshold,
-        archiveRetentionDays: parsedRetention,
-      })
-      setOverdueThreshold(parsedThreshold)
+      await settingsAPI.update({ archiveRetentionDays: parsedRetention })
       setRetentionDays(parsedRetention)
       setThresholdSuccess(true)
       setTimeout(() => setThresholdSuccess(false), 3000)
@@ -457,6 +461,49 @@ export default function Setup() {
       setThresholdError(err.message || 'Failed to save settings.')
     } finally {
       setThresholdSaving(false)
+    }
+  }
+
+  // School Admin: save this school's alert-timeout override.
+  async function handleSaveSchoolThreshold() {
+    setSchoolThresholdSaving(true)
+    setSchoolThresholdError('')
+    setSchoolThresholdSuccess(false)
+
+    const parsed = parseInt(schoolThreshold, 10)
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) {
+      setSchoolThresholdError('Timeout must be a whole number between 1 and 1440 minutes.')
+      setSchoolThresholdSaving(false)
+      return
+    }
+
+    try {
+      await settingsAPI.updateSchoolThreshold(parsed)
+      setSchoolThreshold(String(parsed))
+      setSchoolThresholdSuccess(true)
+      setTimeout(() => setSchoolThresholdSuccess(false), 3000)
+    } catch (err) {
+      setSchoolThresholdError(err.message || 'Failed to save setting.')
+    } finally {
+      setSchoolThresholdSaving(false)
+    }
+  }
+
+  // School Admin: clear the override so the school reverts to the company default.
+  async function handleResetSchoolThreshold() {
+    setSchoolThresholdSaving(true)
+    setSchoolThresholdError('')
+    setSchoolThresholdSuccess(false)
+
+    try {
+      await settingsAPI.updateSchoolThreshold(null)
+      setSchoolThreshold('')
+      setSchoolThresholdSuccess(true)
+      setTimeout(() => setSchoolThresholdSuccess(false), 3000)
+    } catch (err) {
+      setSchoolThresholdError(err.message || 'Failed to reset setting.')
+    } finally {
+      setSchoolThresholdSaving(false)
     }
   }
 
@@ -872,30 +919,9 @@ export default function Setup() {
 
           <div className="bg-white border border-gray-200 rounded-xl p-5 mt-6">
             <h3 className="font-semibold mb-2">System-wide Configuration</h3>
-            <p className="text-sm text-gray-500 mb-4">Only Company Admins can update global settings.</p>
+            <p className="text-sm text-gray-500 mb-4">Only Company Admins can update global settings. The alert-timeout duration is now configured by each School Admin.</p>
 
             <label className="block text-xs text-gray-600 mb-1">
-              Unacknowledged alert threshold (minutes)
-            </label>
-            <p className="text-xs text-gray-400 mb-2">
-              Alerts that remain unacknowledged longer than this will be flagged as overdue.
-            </p>
-            <input
-              type="number"
-              min={1}
-              max={1440}
-              value={thresholdLoading ? '' : overdueThreshold}
-              onChange={event => {
-                setThresholdSuccess(false)
-                setThresholdError('')
-                setOverdueThreshold(event.target.value)
-              }}
-              placeholder={thresholdLoading ? 'Loading...' : '15'}
-              className="w-full px-3 py-2 border rounded disabled:bg-gray-50 disabled:text-gray-400"
-              disabled={thresholdLoading}
-            />
-
-            <label className="block text-xs text-gray-600 mb-1 mt-4">
               Resolved incident retention period (days)
             </label>
             <p className="text-xs text-gray-400 mb-2">
@@ -965,6 +991,62 @@ export default function Setup() {
 
       {isSchoolAdmin && (
         <div className="mt-6">
+          <div className="bg-white border border-gray-200 rounded-xl p-5 mb-6">
+            <div className="flex items-center gap-2 mb-2">
+              <h3 className="font-semibold">Alert Timeout</h3>
+              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">School Admin</span>
+            </div>
+            <label className="block text-xs text-gray-600 mb-1">
+              Unacknowledged alert timeout (minutes)
+            </label>
+            <p className="text-xs text-gray-400 mb-2">
+              Alerts at your school that stay unacknowledged longer than this are flagged as overdue.
+              Leave blank to use the company default.
+            </p>
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              value={thresholdLoading ? '' : schoolThreshold}
+              onChange={event => {
+                setSchoolThresholdSuccess(false)
+                setSchoolThresholdError('')
+                setSchoolThreshold(event.target.value)
+              }}
+              placeholder={thresholdLoading ? 'Loading...' : `Company default: ${companyOverdueThreshold}`}
+              className="w-full px-3 py-2 border rounded disabled:bg-gray-50 disabled:text-gray-400"
+              disabled={thresholdLoading || schoolThresholdSaving}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Company-wide default: {companyOverdueThreshold} minute{companyOverdueThreshold === 1 ? '' : 's'}
+              {schoolThreshold === '' ? ' (currently in use)' : ''}
+            </p>
+
+            {schoolThresholdError && (
+              <p className="text-xs text-red-600 mt-1">{schoolThresholdError}</p>
+            )}
+            {schoolThresholdSuccess && (
+              <p className="text-xs text-green-600 mt-1">Saved.</p>
+            )}
+
+            <div className="mt-4 flex items-center gap-2">
+              <button
+                onClick={handleSaveSchoolThreshold}
+                disabled={schoolThresholdSaving || thresholdLoading}
+                className="px-3 py-2 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {schoolThresholdSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                onClick={handleResetSchoolThreshold}
+                disabled={schoolThresholdSaving || thresholdLoading || schoolThreshold === ''}
+                className="px-3 py-2 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Reset to company default
+              </button>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2 mb-3">
             <h2 className="text-lg font-semibold text-gray-800">Alert Recipients</h2>
             <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">School Admin</span>

@@ -139,6 +139,12 @@ export const settingsAPI = {
       method: 'PATCH',
       body: JSON.stringify(fields),
     }),
+  // School Admin: set the school's own overdue threshold, or pass null to clear the override.
+  updateSchoolThreshold: (overdueThresholdMinutes) =>
+    request('/settings/school-threshold', {
+      method: 'PATCH',
+      body: JSON.stringify({ overdueThresholdMinutes }),
+    }),
 }
 
 export const archiveAPI = {
