@@ -7,7 +7,7 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "seed:demo": "node src/db/seedDemoData.js",
-    "test": "node tests/incidents.test.js && node tests/incidents.integration.test.js && node tests/setup.test.js && node tests/setup.integration.test.js && node tests/schools.test.js && node tests/schools.integration.test.js && node tests/no-hardcoded-schools.test.js",
+    "test": "node tests/incidents.test.js && node tests/incidents.integration.test.js && node tests/setup.test.js && node tests/setup.integration.test.js && node tests/schools.test.js && node tests/schools.integration.test.js && node tests/no-hardcoded-schools.test.js && node tests/settings.test.js",
     "test:schools": "node tests/schools.test.js && node tests/schools.integration.test.js && node tests/no-hardcoded-schools.test.js",
     "test:unit": "node tests/incidents.test.js",
     "test:integration": "node tests/incidents.integration.test.js",
