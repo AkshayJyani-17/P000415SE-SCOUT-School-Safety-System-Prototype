@@ -1,5 +1,6 @@
 const { getDb } = require('./db/firebase')
 const { invalidateIncidentListCache } = require('./incidentListCache')
+const { invalidateAnalyticsCache } = require('./analyticsCache')
 
 const SETTINGS_DOC = 'settings/global'
 const DEFAULT_RETENTION_DAYS = 30
@@ -54,6 +55,7 @@ async function runArchiveJob() {
 
   await batch.commit()
   invalidateIncidentListCache()
+  invalidateAnalyticsCache()
 
   console.log(`[archiver] Archived ${eligible.length} incident(s) (retention: ${retentionDays} days, cutoff: ${cutoffIso})`)
   return { archived: eligible.length }

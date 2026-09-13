@@ -121,15 +121,27 @@ export const setupAPI = {
 }
 
 
+// `schoolId` is the Company Admin school filter. Omitting it (or passing 'all')
+// returns every school; the backend pins a School Admin to their own school
+// regardless of what is sent.
+function analyticsQuery(params) {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value) search.set(key, value)
+  }
+  const query = search.toString()
+  return query ? `?${query}` : ''
+}
+
 export const analyticsAPI = {
-  summary: () => request('/analytics/summary'),
-  byType: () => request('/analytics/by-type'),
-  statusBreakdown: () => request('/analytics/status-breakdown'),
-  byLocation: () => request('/analytics/by-location'),
-  thisWeek: () => request('/analytics/this-week'),
-  responseTimeTrend: () => request('/analytics/response-time-trend'),
-  all: () => request('/analytics/all'),
-  trends: (range = 'week') => request(`/analytics/trends?range=${range}`),
+  summary: (schoolId) => request(`/analytics/summary${analyticsQuery({ schoolId })}`),
+  byType: (schoolId) => request(`/analytics/by-type${analyticsQuery({ schoolId })}`),
+  statusBreakdown: (schoolId) => request(`/analytics/status-breakdown${analyticsQuery({ schoolId })}`),
+  byLocation: (schoolId) => request(`/analytics/by-location${analyticsQuery({ schoolId })}`),
+  thisWeek: (schoolId) => request(`/analytics/this-week${analyticsQuery({ schoolId })}`),
+  responseTimeTrend: (schoolId) => request(`/analytics/response-time-trend${analyticsQuery({ schoolId })}`),
+  all: (schoolId) => request(`/analytics/all${analyticsQuery({ schoolId })}`),
+  trends: (range = 'week', schoolId) => request(`/analytics/trends${analyticsQuery({ range, schoolId })}`),
 }
 
 export const settingsAPI = {

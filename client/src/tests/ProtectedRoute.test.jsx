@@ -39,6 +39,10 @@ vi.mock('../context/AuthContext', () => ({
   }),
 }))
 
+vi.mock('../context/SchoolsContext', () => ({
+  useSchools: () => ({ schools: [], loading: false, error: '' }),
+}))
+
 vi.mock('../api/client', () => ({
   analyticsAPI: {
     all: vi.fn(() =>
@@ -46,14 +50,22 @@ vi.mock('../api/client', () => ({
         summary: {
           totalIncidents: 0,
           resolvedCount: 0,
-          avgResponseTime: '0m',
+          avgResponseTime: 0,
           thisWeekIncidents: 0,
         },
         incidentsByType: [],
-        statusData: [],
+        statusBreakdown: [],
         responseTimeData: [],
         locationData: [],
         incidentsByDay: [],
+      })
+    ),
+    trends: vi.fn(() =>
+      Promise.resolve({
+        incidentsByPeriod: [],
+        incidentsByDayOfWeek: [],
+        incidentsByHour: [],
+        totalInRange: 0,
       })
     ),
   },
