@@ -22,6 +22,15 @@ vi.mock('../context/AuthContext', () => ({
   }),
 }))
 
+vi.mock('../context/SchoolsContext', () => ({
+  useSchools: () => ({
+    schools: [
+      { id: 'school-1', name: 'Alpha School' },
+      { id: 'school-2', name: 'Beta School' },
+      { id: 'school-3', name: 'Gamma School' },
+    ],
+  }),
+}))
 vi.mock('../api/client', () => ({
   incidentAPI: {
     list: vi.fn(() =>
