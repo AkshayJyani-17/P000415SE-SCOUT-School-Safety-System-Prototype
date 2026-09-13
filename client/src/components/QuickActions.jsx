@@ -63,7 +63,7 @@ export default function QuickActions() {
 
 
   const handleEmergencyClick = () => {
-    setShowConfirm(true)
+    setShowCategory(true)
   }
 
   const handleConfirm = () => {
@@ -74,7 +74,7 @@ export default function QuickActions() {
   const handleCategorySelect = type => {
     setSelectedType(type)
     setShowCategory(false)
-    setShowKeypad(true)
+    handleCodeSubmit(type)
     setCode('')
     setCodeError('')
     setCustomMessage('')
@@ -105,7 +105,7 @@ export default function QuickActions() {
     }
   }
 
-  const handleCodeSubmit = async () => {
+  const handleCodeSubmit = async (selectedType, code = '000') => {
     if (code !== '000') {
       setCodeError('Invalid code. Please enter 000 to confirm emergency.')
       return
