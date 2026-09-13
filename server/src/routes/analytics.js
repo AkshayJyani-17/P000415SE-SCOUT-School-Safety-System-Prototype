@@ -3,13 +3,13 @@
 const express = require('express')
 const admin = require('firebase-admin')
 const { getDb } = require('../db/firebase')
-const { getAnalytics, getTrends } = require('../analyticsCache')
+const { getAnalytics, getTrends, VALID_RANGES } = require('../analyticsCache')
+const { getSchoolById, normaliseRole } = require('../services/schoolService')
 
 const router = express.Router()
 
-function normaliseRole(role) {
-  return String(role || '').toLowerCase().replace(/[-_\s]/g, '')
-}
+// Sentinel used by the Company Admin school filter to ask for every school.
+const ALL_SCHOOLS = 'all'
 
 function isCompanyAdmin(role) {
   return normaliseRole(role) === 'companyadmin'
@@ -78,93 +78,105 @@ async function requireAnalyticsViewer(req, res, next) {
   }
 }
 
-function getAnalyticsOptions(profile) {
-  if (isCompanyAdmin(profile.role)) {
-    return { includeFailedAlerts: true }
+// Decides which school the request is allowed to read.
+//
+// A School Admin is always pinned to their own school: the filter is theirs to
+// see, not to change, so an explicit request for another school is rejected
+// rather than silently downgraded. Only a Company Admin may widen the scope to
+// every school or pick a different one.
+class ScopeError extends Error {
+  constructor(message, status) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function resolveScope(profile, requestedSchoolId) {
+  const requested = typeof requestedSchoolId === 'string' ? requestedSchoolId.trim() : ''
+
+  if (isSchoolAdmin(profile.role)) {
+    if (requested && requested !== ALL_SCHOOLS && requested !== profile.schoolId) {
+      throw new ScopeError('You can only view analytics for your own school.', 403)
+    }
+    const school = await getSchoolById(profile.schoolId)
+    return { schoolId: profile.schoolId, schoolName: school?.name || null, isSystemWide: false }
   }
 
-  return {
-    schoolId: profile.schoolId,
-    includeFailedAlerts: true,
+  if (!requested || requested === ALL_SCHOOLS) {
+    return { schoolId: null, schoolName: null, isSystemWide: true }
   }
+
+  const school = await getSchoolById(requested)
+  if (!school) {
+    throw new ScopeError('School not found.', 404)
+  }
+
+  return { schoolId: school.id, schoolName: school.name || null, isSystemWide: false }
+}
+
+// Wraps a handler so scope resolution failures map to their HTTP status
+// instead of falling through to the generic error handler.
+function withScope(handler) {
+  return async (req, res, next) => {
+    try {
+      const scope = await resolveScope(req.profile, req.query.schoolId)
+      await handler(req, res, scope)
+    } catch (error) {
+      if (error instanceof ScopeError) {
+        return res.status(error.status).json({ error: error.message })
+      }
+      next(error)
+    }
+  }
+}
+
+function analyticsOptions(scope) {
+  return { schoolId: scope.schoolId, includeFailedAlerts: true }
 }
 
 router.use(verifyToken, requireAnalyticsViewer)
 
-router.get('/all', async (req, res, next) => {
-  try {
-    const data = await getAnalytics(getAnalyticsOptions(req.profile))
-    res.json(data)
-  } catch (error) {
-    next(error)
-  }
-})
+router.get('/all', withScope(async (req, res, scope) => {
+  const data = await getAnalytics(analyticsOptions(scope))
+  res.json({ ...data, scope })
+}))
 
-router.get('/summary', async (req, res, next) => {
-  try {
-    const data = await getAnalytics(getAnalyticsOptions(req.profile))
-    res.json(data.summary)
-  } catch (error) {
-    next(error)
-  }
-})
+router.get('/summary', withScope(async (req, res, scope) => {
+  const data = await getAnalytics(analyticsOptions(scope))
+  res.json(data.summary)
+}))
 
-router.get('/by-type', async (req, res, next) => {
-  try {
-    const data = await getAnalytics(getAnalyticsOptions(req.profile))
-    res.json(data.incidentsByType)
-  } catch (error) {
-    next(error)
-  }
-})
+router.get('/by-type', withScope(async (req, res, scope) => {
+  const data = await getAnalytics(analyticsOptions(scope))
+  res.json(data.incidentsByType)
+}))
 
-router.get('/status-breakdown', async (req, res, next) => {
-  try {
-    const data = await getAnalytics(getAnalyticsOptions(req.profile))
-    res.json(data.statusBreakdown)
-  } catch (error) {
-    next(error)
-  }
-})
+router.get('/status-breakdown', withScope(async (req, res, scope) => {
+  const data = await getAnalytics(analyticsOptions(scope))
+  res.json(data.statusBreakdown)
+}))
 
-router.get('/by-location', async (req, res, next) => {
-  try {
-    const data = await getAnalytics(getAnalyticsOptions(req.profile))
-    res.json(data.locationData)
-  } catch (error) {
-    next(error)
-  }
-})
+router.get('/by-location', withScope(async (req, res, scope) => {
+  const data = await getAnalytics(analyticsOptions(scope))
+  res.json(data.locationData)
+}))
 
-router.get('/this-week', async (req, res, next) => {
-  try {
-    const data = await getAnalytics(getAnalyticsOptions(req.profile))
-    res.json(data.incidentsByDay)
-  } catch (error) {
-    next(error)
-  }
-})
+router.get('/this-week', withScope(async (req, res, scope) => {
+  const data = await getAnalytics(analyticsOptions(scope))
+  res.json(data.incidentsByDay)
+}))
 
-router.get('/response-time-trend', async (req, res, next) => {
-  try {
-    const data = await getAnalytics(getAnalyticsOptions(req.profile))
-    res.json(data.responseTimeData)
-  } catch (error) {
-    next(error)
-  }
-})
+router.get('/response-time-trend', withScope(async (req, res, scope) => {
+  const data = await getAnalytics(analyticsOptions(scope))
+  res.json(data.responseTimeData)
+}))
 
-const VALID_TREND_RANGES = ['week', 'month', 'quarter', 'year', 'all']
-
-router.get('/trends', async (req, res, next) => {
-  try {
-    const range = VALID_TREND_RANGES.includes(req.query.range) ? req.query.range : 'week'
-    const opts = getAnalyticsOptions(req.profile)
-    const data = await getTrends({ schoolId: opts.schoolId || null, range })
-    res.json(data)
-  } catch (error) {
-    next(error)
-  }
-})
+router.get('/trends', withScope(async (req, res, scope) => {
+  const range = VALID_RANGES.includes(req.query.range) ? req.query.range : 'week'
+  const data = await getTrends({ schoolId: scope.schoolId, range })
+  res.json({ ...data, range, scope })
+}))
 
 module.exports = router
+module.exports.resolveScope = resolveScope
+module.exports.ScopeError = ScopeError

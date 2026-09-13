@@ -1,43 +1,165 @@
-// analyticsCache.js - In-memory analytics cache for SCOUT.
-// Cache is invalidated whenever an incident or notification changes.
+// analyticsCache.js - Analytics aggregation and in-memory cache for SCOUT.
+//
+// Incidents and notifications are loaded once and every view (system-wide or a
+// single school, summary or trends) is derived from that one snapshot in
+// memory. Switching the school filter therefore costs no Firestore reads.
+//
+// Freshness comes from two signals: explicit invalidation whenever an incident
+// or notification changes, and a TTL that bounds how long a missed
+// invalidation can serve stale data.
 
 const { getDb } = require('./db/firebase')
 
-let cachedData = new Map()
-let cacheIsDirty = true
+// Schools are Australian, so a UTC server would otherwise report incidents
+// under the wrong day and hour. Override per deployment if that changes.
+const REPORTING_TIME_ZONE = process.env.ANALYTICS_TIME_ZONE || 'Australia/Melbourne'
 
-let trendsCachedData = new Map()
-let trendsCacheIsDirty = true
+const SOURCE_TTL_MS = 30 * 1000
 
-function toDate(val) {
-  if (!val) return null
-  if (typeof val.toDate === 'function') return val.toDate()
-  const d = new Date(val)
-  return Number.isNaN(d.getTime()) ? null : d
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const PRIORITY_ORDER = ['critical', 'high', 'medium', 'low']
+
+const STATUS_LABELS = {
+  triggered: 'Triggered',
+  acknowledged: 'Acknowledged',
+  'in-progress': 'In Progress',
+  resolved: 'Resolved',
+  archived: 'Archived',
 }
 
-function getResolutionTime(incident) {
-  if (incident.status !== 'resolved') return null
-  const created = toDate(incident.createdAt)
-  const updated = toDate(incident.updatedAt)
-  if (!created || !updated) return null
-  const mins = (updated - created) / 60000
-  return mins > 0 ? mins : null
+const VALID_RANGES = ['week', 'month', 'quarter', 'year', 'all']
+
+// ── Time helpers ──────────────────────────────────────────────────────────────
+
+const zonedFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: REPORTING_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  hourCycle: 'h23',
+  weekday: 'short',
+})
+
+// Labels are rendered from civil dates held as UTC midnight, so they must be
+// formatted in UTC to avoid shifting back across a day boundary.
+const dayLabelFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short',
+})
+const shortDayLabelFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'UTC', day: 'numeric', month: 'short',
+})
+const monthLabelFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'UTC', month: 'short', year: '2-digit',
+})
+
+function toDate(value) {
+  if (!value) return null
+  if (typeof value.toDate === 'function') {
+    const converted = value.toDate()
+    return Number.isNaN(converted?.getTime?.()) ? null : converted
+  }
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date
 }
+
+function zonedParts(date) {
+  const parts = {}
+  for (const { type, value } of zonedFormatter.formatToParts(date)) {
+    parts[type] = value
+  }
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour) % 24,
+    weekday: parts.weekday,
+  }
+}
+
+function pad(value) {
+  return String(value).padStart(2, '0')
+}
+
+// The calendar date in the reporting zone, carried as UTC midnight so that date
+// arithmetic is free of daylight-saving jumps.
+function civilDate(date) {
+  const { year, month, day } = zonedParts(date)
+  return new Date(Date.UTC(year, month - 1, day))
+}
+
+function dayKey(civil) {
+  return civil.toISOString().slice(0, 10)
+}
+
+function monthKey(civil) {
+  return `${civil.getUTCFullYear()}-${pad(civil.getUTCMonth() + 1)}`
+}
+
+function addDays(civil, days) {
+  const next = new Date(civil)
+  next.setUTCDate(next.getUTCDate() + days)
+  return next
+}
+
+function addMonths(civil, months) {
+  return new Date(Date.UTC(civil.getUTCFullYear(), civil.getUTCMonth() + months, 1))
+}
+
+// Monday-first start of the calendar week containing `civil`.
+function startOfWeek(civil) {
+  const weekday = civil.getUTCDay()
+  return addDays(civil, weekday === 0 ? -6 : 1 - weekday)
+}
+
+// ── Incident metrics ──────────────────────────────────────────────────────────
 
 function getAcknowledgementTime(incident) {
   const created = toDate(incident.createdAt)
   if (!created) return null
 
-  const acknowledgedBy = Array.isArray(incident.acknowledgedBy) ? incident.acknowledgedBy : []
-  const acknowledgedAt = acknowledgedBy
-    .map(entry => toDate(entry.acknowledgedAt))
+  const entries = Array.isArray(incident.acknowledgedBy) ? incident.acknowledgedBy : []
+  const acknowledgedAt = entries
+    .map(entry => toDate(entry?.acknowledgedAt))
     .filter(Boolean)
     .sort((a, b) => a - b)[0] || toDate(incident.acknowledgedAt)
 
   if (!acknowledgedAt) return null
-  const mins = (acknowledgedAt - created) / 60000
-  return mins > 0 ? mins : null
+  const minutes = (acknowledgedAt - created) / 60000
+  return minutes >= 0 ? minutes : null
+}
+
+function getResolutionTime(incident) {
+  if (incident.status !== 'resolved') return null
+  const created = toDate(incident.createdAt)
+  const resolved = toDate(incident.resolvedAt) || toDate(incident.updatedAt)
+  if (!created || !resolved) return null
+  const minutes = (resolved - created) / 60000
+  return minutes >= 0 ? minutes : null
+}
+
+function isUnacknowledged(incident) {
+  const acknowledged = Array.isArray(incident.acknowledgedBy) && incident.acknowledgedBy.length > 0
+  return !acknowledged && incident.status !== 'resolved' && incident.status !== 'archived'
+}
+
+function average(values) {
+  if (values.length === 0) return 0
+  const total = values.reduce((sum, value) => sum + value, 0)
+  return Math.round((total / values.length) * 10) / 10
+}
+
+// Incident types are stored in the `snake_case` form used by the alert config;
+// charts need the human label back.
+function formatTypeLabel(type) {
+  const raw = String(type || '').trim()
+  if (!raw) return 'Unknown'
+  return raw
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
 }
 
 function hasFailedSms(notification) {
@@ -48,155 +170,100 @@ function hasFailedEmail(notification) {
   return notification.email === 'failed' || notification.emailStatus === 'failed'
 }
 
-async function getFailedAlerts(db, schoolId) {
-  let query = db.collection('notifications')
-
-  if (schoolId) {
-    query = query.where('schoolId', '==', schoolId)
+function countBy(items, resolveKey) {
+  const counts = new Map()
+  for (const item of items) {
+    const key = resolveKey(item)
+    if (key === null || key === undefined) continue
+    counts.set(key, (counts.get(key) || 0) + 1)
   }
-
-  const snapshot = await query.get()
-  const notifications = snapshot.docs.map(doc => doc.data())
-  const sms = notifications.filter(hasFailedSms).length
-  const email = notifications.filter(hasFailedEmail).length
-
-  return { total: sms + email, sms, email }
+  return counts
 }
 
-async function buildAnalytics({ schoolId = null, includeFailedAlerts = false } = {}) {
-  const db = getDb()
-  let incidentsQuery = db.collection('incidents')
+// ── Aggregation (pure) ────────────────────────────────────────────────────────
 
-  if (schoolId) {
-    incidentsQuery = incidentsQuery.where('schoolId', '==', schoolId)
+function buildAnalyticsFrom(incidents, notifications, { includeFailedAlerts = false, now = new Date() } = {}) {
+  const today = civilDate(now)
+  const weekStartKey = dayKey(startOfWeek(today))
+
+  const resolvedCount = incidents.filter(incident => incident.status === 'resolved').length
+  const activeIncidents = incidents.filter(
+    incident => incident.status !== 'resolved' && incident.status !== 'archived'
+  )
+
+  const ackTimes = incidents.map(getAcknowledgementTime).filter(value => value !== null)
+  const resolutionTimes = incidents.map(getResolutionTime).filter(value => value !== null)
+  const avgAckTime = average(ackTimes)
+
+  const dated = incidents
+    .map(incident => ({ incident, date: toDate(incident.createdAt) }))
+    .filter(entry => entry.date !== null)
+    .map(entry => ({ ...entry, civil: civilDate(entry.date) }))
+
+  const thisWeek = dated.filter(entry => dayKey(entry.civil) >= weekStartKey)
+
+  const typeCounts = countBy(incidents, incident => formatTypeLabel(incident.type))
+  const incidentsByType = [...typeCounts.entries()]
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type))
+
+  const statusCounts = countBy(incidents, incident => STATUS_LABELS[incident.status] || 'Unknown')
+  const statusBreakdown = [...statusCounts.entries()]
+    .map(([name, value]) => ({ name, value }))
+    .filter(entry => entry.value > 0)
+    .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name))
+
+  const locationCounts = new Map()
+  for (const incident of incidents) {
+    const display = String(incident.location || '').trim() || 'Unknown'
+    const key = display.toLowerCase()
+    const existing = locationCounts.get(key)
+    if (existing) existing.count += 1
+    else locationCounts.set(key, { location: display, count: 1 })
   }
+  const locationData = [...locationCounts.values()].sort(
+    (a, b) => b.count - a.count || a.location.localeCompare(b.location)
+  )
 
-  const snapshot = await incidentsQuery.get()
-  const incidents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
-
-  const now = new Date()
-  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-
-  const totalIncidents = incidents.length
-  const resolvedCount = incidents.filter(i => i.status === 'resolved').length
-  const activeIncidents = incidents.filter(i => i.status !== 'archived' && i.status !== 'resolved')
-  const criticalCount = activeIncidents.filter(i => i.priority === 'critical').length
-  const highCount = activeIncidents.filter(i => i.priority === 'high').length
-  const unacknowledgedCount = incidents.filter(i => !i.acknowledgedBy?.length && i.status !== 'resolved' && i.status !== 'archived').length
-
-  const allAckTimes = incidents.map(getAcknowledgementTime).filter(v => v !== null)
-  const avgAckTime = allAckTimes.length > 0
-    ? parseFloat((allAckTimes.reduce((sum, v) => sum + v, 0) / allAckTimes.length).toFixed(1))
-    : 0
-
-  const thisWeekIncidents = incidents.filter(i => {
-    const d = toDate(i.createdAt)
-    return d && d >= weekAgo
-  }).length
-
-  const typeCounts = {}
-  incidents.forEach(i => {
-    const type = i.type?.charAt(0).toUpperCase() + i.type?.slice(1) || 'Unknown'
-    typeCounts[type] = (typeCounts[type] || 0) + 1
-  })
-  const incidentsByType = Object.entries(typeCounts).map(([type, count]) => ({ type, count }))
-
-  const statusMap = {
-    resolved: 'Resolved',
-    acknowledged: 'Acknowledged',
-    triggered: 'Triggered',
-    archived: 'Archived',
-    'in-progress': 'In Progress',
+  const dayCounts = new Map(DAY_NAMES.map(day => [day, 0]))
+  for (const entry of thisWeek) {
+    const weekday = zonedParts(entry.date).weekday
+    if (dayCounts.has(weekday)) dayCounts.set(weekday, dayCounts.get(weekday) + 1)
   }
-  const statusCounts = {}
-  Object.values(statusMap).forEach(status => { statusCounts[status] = 0 })
-  incidents.forEach(i => {
-    const name = statusMap[i.status] || 'Unknown'
-    statusCounts[name] = (statusCounts[name] || 0) + 1
-  })
-  const statusBreakdown = Object.entries(statusCounts).map(([name, value]) => ({ name, value }))
+  const incidentsByDay = DAY_NAMES.map(day => ({ day, incidents: dayCounts.get(day) }))
 
-  const locationCounts = {}
-  incidents.forEach(i => {
-    const raw = (i.location || 'Unknown').trim()
-    const key = raw.toLowerCase()
-    if (!locationCounts[key]) locationCounts[key] = { display: raw, count: 0 }
-    locationCounts[key].count++
-  })
-  const locationData = Object.values(locationCounts).map(({ display, count }) => ({ location: display, count }))
-
-  const startOfWeek = new Date(now)
-  const dowOffset = (startOfWeek.getUTCDay() === 0 ? -6 : 1 - startOfWeek.getUTCDay())
-  startOfWeek.setUTCDate(startOfWeek.getUTCDate() + dowOffset)
-  startOfWeek.setUTCHours(0, 0, 0, 0)
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-  const dayMap = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat', 0: 'Sun' }
-  const dayCounts = {}
-  days.forEach(day => { dayCounts[day] = 0 })
-  incidents.forEach(i => {
-    const d = toDate(i.createdAt)
-    if (d && d >= startOfWeek) dayCounts[dayMap[d.getUTCDay()]]++
-  })
-  const incidentsByDay = days.map(day => ({ day, incidents: dayCounts[day] }))
-
-  const weekData = {}
-  for (let i = 0; i < 4; i++) {
-    weekData[`Week ${i + 1}`] = { ackTotal: 0, ackCount: 0, resolutionTotal: 0, resolutionCount: 0 }
+  const priorityCounts = new Map(PRIORITY_ORDER.map(priority => [priority, 0]))
+  for (const incident of incidents) {
+    const priority = String(incident.priority || '').toLowerCase()
+    if (priorityCounts.has(priority)) priorityCounts.set(priority, priorityCounts.get(priority) + 1)
   }
-
-  incidents.forEach(i => {
-    const d = toDate(i.createdAt)
-    if (!d) return
-    const weekNumber = Math.floor((now - d) / (7 * 24 * 60 * 60 * 1000)) + 1
-    if (weekNumber < 1 || weekNumber > 4) return
-
-    const key = `Week ${5 - weekNumber}`
-    const ackTime = getAcknowledgementTime(i)
-    const resolutionTime = getResolutionTime(i)
-
-    if (ackTime !== null) {
-      weekData[key].ackTotal += ackTime
-      weekData[key].ackCount++
-    }
-
-    if (resolutionTime !== null) {
-      weekData[key].resolutionTotal += resolutionTime
-      weekData[key].resolutionCount++
-    }
-  })
-
-  const responseTimeData = Object.entries(weekData).map(([week, d]) => ({
-    week,
-    avgAckMinutes: d.ackCount > 0 ? parseFloat((d.ackTotal / d.ackCount).toFixed(1)) : 0,
-    avgResolutionMinutes: d.resolutionCount > 0 ? parseFloat((d.resolutionTotal / d.resolutionCount).toFixed(1)) : 0,
-  }))
-
-  const priorityOrder = ['critical', 'high', 'medium', 'low']
-  const priorityCounts = {}
-  priorityOrder.forEach(priority => { priorityCounts[priority] = 0 })
-  incidents.forEach(i => {
-    const priority = (i.priority || '').toLowerCase()
-    if (priorityCounts[priority] !== undefined) priorityCounts[priority]++
-  })
-  const incidentsByPriority = priorityOrder.map(priority => ({
+  const incidentsByPriority = PRIORITY_ORDER.map(priority => ({
     priority: priority.charAt(0).toUpperCase() + priority.slice(1),
-    count: priorityCounts[priority],
+    count: priorityCounts.get(priority),
   }))
 
-  const failedAlerts = includeFailedAlerts ? await getFailedAlerts(db, schoolId) : undefined
+  const responseTimeData = buildResponseTimeSeries(dated, today)
+
+  let failedAlerts = null
+  if (includeFailedAlerts) {
+    const sms = notifications.filter(hasFailedSms).length
+    const email = notifications.filter(hasFailedEmail).length
+    failedAlerts = { total: sms + email, sms, email }
+  }
 
   return {
     summary: {
-      totalIncidents,
+      totalIncidents: incidents.length,
       resolvedCount,
+      activeIncidents: activeIncidents.length,
+      criticalCount: activeIncidents.filter(incident => incident.priority === 'critical').length,
+      highCount: activeIncidents.filter(incident => incident.priority === 'high').length,
+      unacknowledgedCount: incidents.filter(isUnacknowledged).length,
       avgResponseTime: avgAckTime,
       avgAckTime,
-      thisWeekIncidents,
-      unacknowledgedCount,
-      activeIncidents: activeIncidents.length,
-      criticalCount,
-      highCount,
-      ...(includeFailedAlerts ? { failedAlerts: failedAlerts.total } : {}),
+      avgResolutionTime: average(resolutionTimes),
+      thisWeekIncidents: thisWeek.length,
+      ...(failedAlerts ? { failedAlerts: failedAlerts.total } : {}),
     },
     incidentsByType,
     statusBreakdown,
@@ -204,237 +271,241 @@ async function buildAnalytics({ schoolId = null, includeFailedAlerts = false } =
     incidentsByDay,
     responseTimeData,
     incidentsByPriority,
-    ...(includeFailedAlerts ? { failedAlerts } : {}),
+    ...(failedAlerts ? { failedAlerts } : {}),
   }
 }
 
-// ---------------------------------------------------------------------------
-// Trends analytics — incident patterns by time period, day-of-week, hour
-// ---------------------------------------------------------------------------
-
-const VALID_RANGES = ['week', 'month', 'quarter', 'year', 'all']
-
-async function buildTrends({ schoolId = null, range = 'week' } = {}) {
-  const db = getDb()
-  let incidentsQuery = db.collection('incidents')
-  if (schoolId) {
-    incidentsQuery = incidentsQuery.where('schoolId', '==', schoolId)
+// Four rolling 7-day windows, oldest first, ending today.
+function buildResponseTimeSeries(dated, today) {
+  const windows = []
+  for (let index = 3; index >= 0; index -= 1) {
+    const end = addDays(today, -index * 7)
+    const start = addDays(end, -6)
+    windows.push({ startKey: dayKey(start), endKey: dayKey(end), ack: [], resolution: [] })
   }
 
-  const snapshot = await incidentsQuery.get()
-  const allIncidents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+  for (const entry of dated) {
+    const key = dayKey(entry.civil)
+    const window = windows.find(candidate => key >= candidate.startKey && key <= candidate.endKey)
+    if (!window) continue
 
-  const now = new Date()
-  let cutoff = null
-
-  switch (range) {
-    case 'week':
-      cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-      break
-    case 'month':
-      cutoff = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate())
-      break
-    case 'quarter':
-      cutoff = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())
-      break
-    case 'year':
-      cutoff = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate())
-      break
-    case 'all':
-    default:
-      cutoff = null
+    const ackTime = getAcknowledgementTime(entry.incident)
+    const resolutionTime = getResolutionTime(entry.incident)
+    if (ackTime !== null) window.ack.push(ackTime)
+    if (resolutionTime !== null) window.resolution.push(resolutionTime)
   }
 
-  const incidents = cutoff
-    ? allIncidents.filter(i => {
-        const d = toDate(i.createdAt)
-        return d && d >= cutoff
-      })
-    : allIncidents
-
-  // --- Incidents by day of week (Mon → Sun) ---
-  const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-  // getDay() returns 0=Sun, 1=Mon … 6=Sat; map to our Mon-first order
-  const DAY_MAP = { 0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat' }
-  const dowCounts = {}
-  DAY_NAMES.forEach(d => { dowCounts[d] = 0 })
-  incidents.forEach(i => {
-    const d = toDate(i.createdAt)
-    if (d) dowCounts[DAY_MAP[d.getDay()]]++
-  })
-  const incidentsByDayOfWeek = DAY_NAMES.map(day => ({ day, count: dowCounts[day] }))
-
-  // --- Incidents by hour of day (00:00 → 23:00) ---
-  const hourCounts = {}
-  for (let h = 0; h < 24; h++) hourCounts[h] = 0
-  incidents.forEach(i => {
-    const d = toDate(i.createdAt)
-    if (d) hourCounts[d.getHours()]++
-  })
-  const incidentsByHour = Object.entries(hourCounts).map(([h, count]) => ({
-    hour: `${String(h).padStart(2, '0')}:00`,
-    count,
+  return windows.map((window, index) => ({
+    week: `Week ${index + 1}`,
+    avgAckMinutes: average(window.ack),
+    avgResolutionMinutes: average(window.resolution),
   }))
+}
 
-  // --- Incidents over time (timeline buckets) ---
-  let incidentsByPeriod = []
-
+// Buckets and the range filter are derived from one definition, so the chart
+// always sums to `totalInRange`.
+function buildPeriodBuckets(range, today, dated) {
   if (range === 'week') {
-    // Last 7 individual days
-    const periodMap = {}
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(now)
-      d.setDate(d.getDate() - i)
-      const key = d.toISOString().slice(0, 10)
-      periodMap[key] = {
-        label: d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }),
-        count: 0,
-      }
+    const buckets = []
+    for (let index = 6; index >= 0; index -= 1) {
+      const civil = addDays(today, -index)
+      buckets.push({ label: dayLabelFormatter.format(civil), keys: [dayKey(civil)], count: 0 })
     }
-    incidents.forEach(i => {
-      const d = toDate(i.createdAt)
-      if (!d) return
-      const key = d.toISOString().slice(0, 10)
-      if (periodMap[key]) periodMap[key].count++
-    })
-    incidentsByPeriod = Object.values(periodMap)
+    return buckets
+  }
 
-  } else if (range === 'month') {
-    // Last 4 weekly buckets
-    const weekBuckets = []
-    for (let i = 3; i >= 0; i--) {
-      const start = new Date(now)
-      start.setDate(start.getDate() - (i + 1) * 7)
-      start.setHours(0, 0, 0, 0)
-      const end = new Date(now)
-      end.setDate(end.getDate() - i * 7 - 1)
-      end.setHours(23, 59, 59, 999)
-      weekBuckets.push({
-        label: start.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
-        start,
-        end,
+  if (range === 'month') {
+    const buckets = []
+    for (let index = 3; index >= 0; index -= 1) {
+      const end = addDays(today, -index * 7)
+      const start = addDays(end, -6)
+      const keys = []
+      for (let offset = 0; offset < 7; offset += 1) keys.push(dayKey(addDays(start, offset)))
+      buckets.push({ label: shortDayLabelFormatter.format(start), keys, count: 0 })
+    }
+    return buckets
+  }
+
+  if (range === 'quarter' || range === 'year') {
+    const span = range === 'quarter' ? 3 : 12
+    const firstOfThisMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1))
+    const buckets = []
+    for (let index = span - 1; index >= 0; index -= 1) {
+      const civil = addMonths(firstOfThisMonth, -index)
+      buckets.push({ label: monthLabelFormatter.format(civil), keys: [monthKey(civil)], count: 0, monthly: true })
+    }
+    return buckets
+  }
+
+  const months = new Map()
+  for (const entry of dated) {
+    const key = monthKey(entry.civil)
+    if (!months.has(key)) {
+      months.set(key, {
+        label: monthLabelFormatter.format(new Date(Date.UTC(entry.civil.getUTCFullYear(), entry.civil.getUTCMonth(), 1))),
+        keys: [key],
         count: 0,
+        monthly: true,
       })
     }
-    incidents.forEach(i => {
-      const d = toDate(i.createdAt)
-      if (!d) return
-      for (const bucket of weekBuckets) {
-        if (d >= bucket.start && d <= bucket.end) { bucket.count++; break }
-      }
-    })
-    incidentsByPeriod = weekBuckets.map(({ label, count }) => ({ label, count }))
+  }
+  return [...months.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, bucket]) => bucket)
+}
 
-  } else if (range === 'quarter') {
-    // Last 3 calendar months
-    const monthBuckets = []
-    for (let i = 2; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      monthBuckets.push({
-        label: d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
-        year: d.getFullYear(),
-        month: d.getMonth(),
-        count: 0,
-      })
-    }
-    incidents.forEach(i => {
-      const d = toDate(i.createdAt)
-      if (!d) return
-      const bucket = monthBuckets.find(b => b.year === d.getFullYear() && b.month === d.getMonth())
-      if (bucket) bucket.count++
-    })
-    incidentsByPeriod = monthBuckets.map(({ label, count }) => ({ label, count }))
+function buildTrendsFrom(incidents, { range = 'week', now = new Date() } = {}) {
+  const today = civilDate(now)
 
-  } else if (range === 'year') {
-    // Last 12 calendar months
-    const monthBuckets = []
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      monthBuckets.push({
-        label: d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
-        year: d.getFullYear(),
-        month: d.getMonth(),
-        count: 0,
-      })
-    }
-    incidents.forEach(i => {
-      const d = toDate(i.createdAt)
-      if (!d) return
-      const bucket = monthBuckets.find(b => b.year === d.getFullYear() && b.month === d.getMonth())
-      if (bucket) bucket.count++
-    })
-    incidentsByPeriod = monthBuckets.map(({ label, count }) => ({ label, count }))
+  const dated = incidents
+    .map(incident => toDate(incident.createdAt))
+    .filter(Boolean)
+    .map(date => ({ date, civil: civilDate(date) }))
 
-  } else {
-    // all — dynamic monthly grouping across all available data
-    const monthCounts = {}
-    incidents.forEach(i => {
-      const d = toDate(i.createdAt)
-      if (!d) return
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-      if (!monthCounts[key]) {
-        monthCounts[key] = {
-          label: d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
-          count: 0,
-        }
-      }
-      monthCounts[key].count++
-    })
-    incidentsByPeriod = Object.entries(monthCounts)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([, { label, count }]) => ({ label, count }))
+  const buckets = buildPeriodBuckets(range, today, dated)
+
+  const bucketByKey = new Map()
+  buckets.forEach((bucket, index) => {
+    for (const key of bucket.keys) bucketByKey.set(key, index)
+  })
+
+  const inRange = []
+  for (const entry of dated) {
+    const dayIndex = bucketByKey.get(dayKey(entry.civil))
+    const monthIndex = bucketByKey.get(monthKey(entry.civil))
+    const index = dayIndex !== undefined ? dayIndex : monthIndex
+    if (index === undefined) continue
+    buckets[index].count += 1
+    inRange.push(entry)
+  }
+
+  const dowCounts = new Map(DAY_NAMES.map(day => [day, 0]))
+  const hourCounts = new Array(24).fill(0)
+  for (const entry of inRange) {
+    const { weekday, hour } = zonedParts(entry.date)
+    if (dowCounts.has(weekday)) dowCounts.set(weekday, dowCounts.get(weekday) + 1)
+    hourCounts[hour] += 1
   }
 
   return {
-    incidentsByDayOfWeek,
-    incidentsByHour,
-    incidentsByPeriod,
-    totalInRange: incidents.length,
+    incidentsByDayOfWeek: DAY_NAMES.map(day => ({ day, count: dowCounts.get(day) })),
+    incidentsByHour: hourCounts.map((count, hour) => ({ hour: `${pad(hour)}:00`, count })),
+    incidentsByPeriod: buckets.map(({ label, count }) => ({ label, count })),
+    totalInRange: inRange.length,
   }
+}
+
+// ── Source snapshots ──────────────────────────────────────────────────────────
+
+const sources = {
+  incidents: { data: null, loadedAt: 0, inFlight: null },
+  notifications: { data: null, loadedAt: 0, inFlight: null },
+}
+
+let derivedCache = new Map()
+
+function loadSource(name) {
+  const source = sources[name]
+  const isFresh = source.data !== null && Date.now() - source.loadedAt < SOURCE_TTL_MS
+
+  if (isFresh) return Promise.resolve(source.data)
+  if (source.inFlight) return source.inFlight
+
+  source.inFlight = getDb()
+    .collection(name)
+    .get()
+    .then(snapshot => {
+      source.data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+      source.loadedAt = Date.now()
+      return source.data
+    })
+    .finally(() => {
+      source.inFlight = null
+    })
+
+  return source.inFlight
+}
+
+function scopeToSchool(records, schoolId) {
+  return schoolId ? records.filter(record => record.schoolId === schoolId) : records
+}
+
+// The stamp changes whenever a snapshot is reloaded or invalidated, which
+// expires every derived entry built from it without tracking them individually.
+function sourceStamp(includeNotifications) {
+  return includeNotifications
+    ? `${sources.incidents.loadedAt}:${sources.notifications.loadedAt}`
+    : `${sources.incidents.loadedAt}`
+}
+
+function readDerived(key, stamp) {
+  const entry = derivedCache.get(key)
+  return entry && entry.stamp === stamp ? entry.data : null
+}
+
+function writeDerived(key, stamp, data) {
+  derivedCache.set(key, { stamp, data })
+  return data
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+async function getAnalytics(options = {}) {
+  const schoolId = options.schoolId || null
+  const includeFailedAlerts = Boolean(options.includeFailedAlerts)
+
+  const [incidents, notifications] = await Promise.all([
+    loadSource('incidents'),
+    includeFailedAlerts ? loadSource('notifications') : Promise.resolve([]),
+  ])
+
+  const stamp = sourceStamp(includeFailedAlerts)
+  const key = `analytics:${schoolId}:${includeFailedAlerts}`
+
+  const cached = readDerived(key, stamp)
+  if (cached) return cached
+
+  const data = buildAnalyticsFrom(
+    scopeToSchool(incidents, schoolId),
+    scopeToSchool(notifications, schoolId),
+    { includeFailedAlerts }
+  )
+
+  return writeDerived(key, stamp, data)
 }
 
 async function getTrends(options = {}) {
+  const schoolId = options.schoolId || null
   const range = VALID_RANGES.includes(options.range) ? options.range : 'week'
-  const cacheKey = JSON.stringify({ schoolId: options.schoolId || null, range })
 
-  if (!trendsCacheIsDirty && trendsCachedData.has(cacheKey)) {
-    console.log('Trends analytics served from cache')
-    return trendsCachedData.get(cacheKey)
-  }
+  const incidents = await loadSource('incidents')
 
-  console.log('Trends analytics cache miss - rebuilding from Firestore')
-  const data = await buildTrends({ schoolId: options.schoolId || null, range })
-  trendsCachedData.set(cacheKey, data)
-  trendsCacheIsDirty = false
-  return data
-}
+  const stamp = sourceStamp(false)
+  const key = `trends:${schoolId}:${range}`
 
-// ---------------------------------------------------------------------------
+  const cached = readDerived(key, stamp)
+  if (cached) return cached
 
-async function getAnalytics(options = {}) {
-  const cacheKey = JSON.stringify({
-    schoolId: options.schoolId || null,
-    includeFailedAlerts: Boolean(options.includeFailedAlerts),
-  })
-
-  if (!cacheIsDirty && cachedData.has(cacheKey)) {
-    console.log('Analytics served from cache')
-    return cachedData.get(cacheKey)
-  }
-
-  console.log('Analytics cache miss - rebuilding from Firestore')
-  const data = await buildAnalytics(options)
-  cachedData.set(cacheKey, data)
-  cacheIsDirty = false
-  return data
+  const data = buildTrendsFrom(scopeToSchool(incidents, schoolId), { range })
+  return writeDerived(key, stamp, data)
 }
 
 function invalidateAnalyticsCache() {
-  cacheIsDirty = true
-  cachedData.clear()
-  trendsCacheIsDirty = true
-  trendsCachedData.clear()
-  console.log('Analytics cache invalidated')
+  for (const source of Object.values(sources)) {
+    source.data = null
+    source.loadedAt = 0
+  }
+  derivedCache.clear()
 }
 
-module.exports = { getAnalytics, getTrends, invalidateAnalyticsCache }
+module.exports = {
+  getAnalytics,
+  getTrends,
+  invalidateAnalyticsCache,
+  buildAnalyticsFrom,
+  buildTrendsFrom,
+  formatTypeLabel,
+  getAcknowledgementTime,
+  getResolutionTime,
+  isUnacknowledged,
+  REPORTING_TIME_ZONE,
+  VALID_RANGES,
+}
