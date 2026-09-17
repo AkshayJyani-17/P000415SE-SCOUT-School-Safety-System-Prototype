@@ -66,6 +66,44 @@ vi.mock('../api/client', () => ({
 }))
 
 describe('Submit Alert Interaction Test', () => {
+  test('does not submit a one-letter title', async () => {
+    const { incidentAPI } = await import('../api/client')
+
+    render(
+      <MemoryRouter>
+        <SubmitAlert />
+      </MemoryRouter>
+    )
+
+    fireEvent.change(
+      screen.getByPlaceholderText(/brief description of the incident/i),
+      { target: { value: 's' } }
+    )
+    fireEvent.click(screen.getByRole('button', { name: /submit alert/i }))
+
+    expect(await screen.findByText(/enter a meaningful title/i)).toBeInTheDocument()
+    expect(incidentAPI.create).not.toHaveBeenCalled()
+  })
+
+  test('does not submit a number-only title', async () => {
+    const { incidentAPI } = await import('../api/client')
+
+    render(
+      <MemoryRouter>
+        <SubmitAlert />
+      </MemoryRouter>
+    )
+
+    fireEvent.change(
+      screen.getByPlaceholderText(/brief description of the incident/i),
+      { target: { value: '33245576432' } }
+    )
+    fireEvent.click(screen.getByRole('button', { name: /submit alert/i }))
+
+    expect(await screen.findByText(/enter a meaningful title/i)).toBeInTheDocument()
+    expect(incidentAPI.create).not.toHaveBeenCalled()
+  })
+
   test('fills form, submits alert, and calls API', async () => {
     const { incidentAPI } = await import('../api/client')
 
