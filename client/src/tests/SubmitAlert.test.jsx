@@ -38,6 +38,7 @@ vi.mock('../context/AuthContext', () => ({
 
 vi.mock('../api/client', () => ({
   incidentAPI: {
+    previewRecipients: vi.fn(() => Promise.resolve({ recipients: [{ name: 'Fire Warden', email: 'warden@school.edu' }] })),
     create: vi.fn(() =>
       Promise.resolve({
         id: '1',
@@ -79,7 +80,7 @@ describe('Submit Alert Interaction Test', () => {
       screen.getByPlaceholderText(/brief description of the incident/i),
       { target: { value: 's' } }
     )
-    fireEvent.click(screen.getByRole('button', { name: /submit alert/i }))
+    fireEvent.click(screen.getByRole('button', { name: /preview alert/i }))
 
     expect(await screen.findByText(/enter a meaningful title/i)).toBeInTheDocument()
     expect(incidentAPI.create).not.toHaveBeenCalled()
@@ -98,13 +99,13 @@ describe('Submit Alert Interaction Test', () => {
       screen.getByPlaceholderText(/brief description of the incident/i),
       { target: { value: '33245576432' } }
     )
-    fireEvent.click(screen.getByRole('button', { name: /submit alert/i }))
+    fireEvent.click(screen.getByRole('button', { name: /preview alert/i }))
 
     expect(await screen.findByText(/enter a meaningful title/i)).toBeInTheDocument()
     expect(incidentAPI.create).not.toHaveBeenCalled()
   })
 
-  test('fills form, submits alert, and calls API', async () => {
+  test('previews details and recipients before submitting, and can return to edit', async () => {
     const { incidentAPI } = await import('../api/client')
 
     render(
@@ -135,9 +136,18 @@ describe('Submit Alert Interaction Test', () => {
     )
 
     fireEvent.click(
-      screen.getByRole('button', { name: /submit alert/i })
+      screen.getByRole('button', { name: /preview alert/i })
     )
 
+    expect(await screen.findByRole('heading', { name: /review alert/i })).toBeInTheDocument()
+    expect(screen.getByText('warden@school.edu')).toBeInTheDocument()
+    expect(screen.getByText(/smoke reported near the classroom area/i)).toBeInTheDocument()
+    expect(incidentAPI.create).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /edit alert/i }))
+    expect(screen.getByDisplayValue('Fire near science block')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /preview alert/i }))
+    await screen.findByRole('heading', { name: /review alert/i })
+    fireEvent.click(screen.getByRole('button', { name: /confirm and submit alert/i }))
     await waitFor(() => {
       expect(incidentAPI.create).toHaveBeenCalled()
     })

@@ -59,6 +59,8 @@ export async function getIncidentById(id) {
 export const incidentAPI = {
   create: data =>
     request('/incidents', { method: 'POST', body: JSON.stringify(data) }),
+  previewRecipients: (type, schoolId) =>
+    request(`/incidents/preview/recipients?${new URLSearchParams({ type, ...(schoolId ? { schoolId } : {}) })}`),
   list: () => request('/incidents').then(data => data.incidents ?? data),
   updateStatus: (id, status, extra = {}) =>
     request(`/incidents/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status, ...extra }) }),
