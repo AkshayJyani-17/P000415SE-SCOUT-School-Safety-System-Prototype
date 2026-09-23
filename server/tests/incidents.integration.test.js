@@ -13,7 +13,7 @@ function makeDoc(id, data) {
   }
 }
 
-function createTestDb({ incidents = {}, notifications = {}, users = {}, schools = {} } = {}) {
+function createTestDb({ incidents = {}, notifications = {}, users = {}, schools = {}, notificationRouting = {}, notificationRecipients = {} } = {}) {
   // schoolService caches the school list in a module-level store, so it has to
   // be cleared whenever a test swaps in a fresh database.
   require('../src/schoolCache').resetSchoolCache()
@@ -22,6 +22,8 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
   const notificationStore = new Map(Object.entries(notifications).map(([id, value]) => [id, { ...value }]))
   const userStore = new Map(Object.entries(users).map(([id, value]) => [id, { ...value }]))
   const schoolStore = new Map(Object.entries(schools).map(([id, value]) => [id, { ...value }]))
+  const routingStore = new Map(Object.entries(notificationRouting))
+  const recipientStore = new Map(Object.entries(notificationRecipients))
   const counterStore = new Map()
 
   function makeQuery(store, filters = [], limitCount = null) {
@@ -94,6 +96,8 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
       if (name === 'notifications') {
         return makeQuery(notificationStore)
       }
+      if (name === 'notificationRouting') return makeQuery(routingStore)
+      if (name === 'notificationRecipients') return makeQuery(recipientStore)
 
       if (name === 'users') {
         return {
@@ -408,7 +412,7 @@ test('POST /api/incidents creates a new incident with authenticated reporter det
   })
 })
 
-test('POST /api/incidents rejects company admin incident creation', async () => {
+test('POST /api/incidents requires company admin to select a school', async () => {
   fakeDb = createTestDb({
     users: {
       'company-uid': {
@@ -432,6 +436,40 @@ test('POST /api/incidents rejects company admin incident creation', async () => 
     })
 
     assert.equal(response.status, 403)
+  })
+})
+
+test('preview recipients uses the sender school and does not create an incident', async () => {
+  fakeDb = createTestDb({
+    users: { 'school-admin-uid': { role: 'schoolAdmin', schoolId: 'school_alpha' } },
+    notificationRouting: {
+      alpha: { schoolId: 'school_alpha', alertType: 'fire', active: true, recipients: [{ name: 'Fire Warden', email: 'warden@alpha.edu' }] },
+      beta: { schoolId: 'school_beta', alertType: 'fire', active: true, recipients: [{ name: 'Other Warden', email: 'warden@beta.edu' }] },
+    },
+  })
+  await withServer(createApp(), async baseUrl => {
+    const response = await fetch(`${baseUrl}/api/incidents/preview/recipients?type=fire&schoolId=school_beta`, { headers: { Authorization: 'Bearer school-token' } })
+    assert.equal(response.status, 200)
+    assert.deepEqual((await response.json()).recipients, [{ name: 'Fire Warden', email: 'warden@alpha.edu' }])
+    assert.equal(fakeDb.stores.incidents.size, 0)
+  })
+})
+
+test('company admin submits to the selected active school', async () => {
+  fakeDb = createTestDb({
+    users: { 'company-uid': { name: 'Company Admin', role: 'companyAdmin' } },
+    schools: { school_alpha: { name: 'Alpha School', active: true } },
+  })
+  await withServer(createApp(), async baseUrl => {
+    const response = await fetch(`${baseUrl}/api/incidents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer company-token' },
+      body: JSON.stringify({ schoolId: 'school_alpha', type: 'fire', title: 'Fire alert', location: 'Block A' }),
+    })
+    assert.equal(response.status, 201)
+    const incident = fakeDb.stores.incidents.get((await response.json()).id)
+    assert.equal(incident.schoolName, 'Alpha School')
+    assert.equal(incident.schoolId, 'school_alpha')
   })
 })
 

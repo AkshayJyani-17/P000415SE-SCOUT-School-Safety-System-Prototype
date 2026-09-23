@@ -61,7 +61,7 @@ function isSchoolAdmin(role) {
 }
 
 function canCreateIncident(role) {
-  return ['schooladmin', 'staff'].includes(normaliseRole(role))
+  return ['companyadmin', 'schooladmin', 'staff'].includes(normaliseRole(role))
 }
 
 async function getUserProfile(decodedUser) {
@@ -303,6 +303,33 @@ router.get('/:id', verifyToken, async (req, res, next) => {
   }
 })
 
+// Resolve the same school-scoped routing used to configure alert recipients.
+router.get('/preview/recipients', verifyToken, async (req, res, next) => {
+  try {
+    const profile = await getUserProfile(req.user)
+    if (!canCreateIncident(profile.role)) return res.status(403).json({ error: 'You do not have permission to preview alerts.' })
+    const schoolId = isCompanyAdmin(profile.role) ? req.query.schoolId : profile.schoolId
+    const type = String(req.query.type || '').trim()
+    if (!schoolId || !type) return res.status(400).json({ error: 'School and alert type are required.' })
+
+    const db = getDb()
+    const snapshot = await db.collection('notificationRouting').where('schoolId', '==', schoolId).get()
+    const rule = snapshot.docs.map(doc => doc.data()).find(item =>
+      item.active !== false && String(item.alertType || '').toLowerCase().replace(/\s+/g, '_') === type.toLowerCase()
+    )
+    let recipients = []
+    if (rule && Array.isArray(rule.recipients)) {
+      recipients = rule.recipients.filter(item => item.email || item.phone)
+    } else if (rule && Array.isArray(rule.roles)) {
+      const contacts = await db.collection('notificationRecipients').where('schoolId', '==', schoolId).get()
+      recipients = contacts.docs.map(doc => doc.data()).filter(item => item.active !== false && rule.roles.includes(item.role) && (item.email || item.phone))
+    }
+    res.json({ recipients: recipients.map(({ name, email, phone, notify, role }) => ({ name, email, phone, notify, role })) })
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.post('/', verifyToken, async (req, res, next) => {
   try {
     const { type, priority, status, title, location, description } = req.body
@@ -313,8 +340,15 @@ router.post('/', verifyToken, async (req, res, next) => {
       return res.status(403).json({ error: 'You do not have permission to submit incidents.' })
     }
 
-    if (!reporter.schoolId) {
+    const schoolId = isCompanyAdmin(reporter.role) ? req.body.schoolId : reporter.schoolId
+    if (!schoolId) {
       return res.status(403).json({ error: 'Your account is not assigned to a school.' })
+    }
+    let schoolName = reporter.schoolName
+    if (isCompanyAdmin(reporter.role)) {
+      const school = await getDb().collection('schools').doc(schoolId).get()
+      if (!school.exists || school.data().active === false) return res.status(400).json({ error: 'Select an active school.' })
+      schoolName = school.data().name
     }
     const incidentNumber = await getNextIncidentNumber()
 
@@ -330,8 +364,8 @@ router.post('/', verifyToken, async (req, res, next) => {
       triggeredById: reporter.uid,
       triggeredByEmail: reporter.email,
       triggeredByRole: reporter.role,
-      schoolId: reporter.schoolId,
-      schoolName: reporter.schoolName,
+      schoolId,
+      schoolName,
       assignedUserIds: [],
       assignedUserEmails: [],
       createdAt: now,
