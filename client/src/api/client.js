@@ -159,6 +159,11 @@ export const settingsAPI = {
       method: 'PATCH',
       body: JSON.stringify({ overdueThresholdMinutes }),
     }),
+  updateArchiveRetention: (archiveRetentionDays) =>
+    request('/settings/archive-retention', {
+      method: 'PATCH',
+      body: JSON.stringify({ archiveRetentionDays }),
+    }),
 }
 
 export const archiveAPI = {

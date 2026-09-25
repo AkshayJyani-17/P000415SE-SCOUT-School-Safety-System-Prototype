@@ -200,6 +200,44 @@ router.patch('/school-threshold', verifyToken, async (req, res, next) => {
     next(error)
   }
 })
+// PATCH /api/settings/archive-retention — School Admin updates the
+// resolved incident retention period.
+router.patch('/archive-retention', verifyToken, async (req, res, next) => {
+  try {
+    const { role } = await getUserContext(req.user.uid, req.user.email)
+
+    if (!isSchoolAdmin(role)) {
+      return res.status(403).json({
+        error: 'Only School Admins can update the retention period.',
+      })
+    }
+
+    const { archiveRetentionDays } = req.body
+
+    if (
+      typeof archiveRetentionDays !== 'number' ||
+      !Number.isInteger(archiveRetentionDays) ||
+      archiveRetentionDays < 1 ||
+      archiveRetentionDays > 365
+    ) {
+      return res.status(400).json({
+        error: 'archiveRetentionDays must be a whole number between 1 and 365.',
+      })
+    }
+
+    await getDb().doc(SETTINGS_DOC).set(
+      { archiveRetentionDays },
+      { merge: true }
+    )
+
+    res.json({
+      success: true,
+      archiveRetentionDays,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
 
 module.exports = router
 // Exposed for unit testing (Express router is a function; attaching a property is safe).

@@ -453,7 +453,7 @@ export default function Setup() {
     }
 
     try {
-      await settingsAPI.update({ archiveRetentionDays: parsedRetention })
+      await settingsAPI.updateArchiveRetention(parsedRetention)
       setRetentionDays(parsedRetention)
       setThresholdSuccess(true)
       setTimeout(() => setThresholdSuccess(false), 3000)
@@ -917,54 +917,12 @@ export default function Setup() {
             </div>
           </div>
 
-          <div className="bg-white border border-gray-200 rounded-xl p-5 mt-6">
-            <h3 className="font-semibold mb-2">System-wide Configuration</h3>
-            <p className="text-sm text-gray-500 mb-4">Only Company Admins can update global settings. The alert-timeout duration is now configured by each School Admin.</p>
-
-            <label className="block text-xs text-gray-600 mb-1">
-              Resolved incident retention period (days)
-            </label>
-            <p className="text-xs text-gray-400 mb-2">
-              Resolved incidents older than this will be moved to the archive automatically. Archived records are never deleted.
-            </p>
-            <input
-              type="number"
-              min={1}
-              max={365}
-              value={thresholdLoading ? '' : retentionDays}
-              onChange={event => {
-                setThresholdSuccess(false)
-                setThresholdError('')
-                setRetentionDays(event.target.value)
-              }}
-              placeholder={thresholdLoading ? 'Loading...' : '30'}
-              className="w-full px-3 py-2 border rounded disabled:bg-gray-50 disabled:text-gray-400"
-              disabled={thresholdLoading}
-            />
-
-            {thresholdError && (
-              <p className="text-xs text-red-600 mt-1">{thresholdError}</p>
-            )}
-            {thresholdSuccess && (
-              <p className="text-xs text-green-600 mt-1">Settings saved.</p>
-            )}
-
-            <div className="mt-4">
-              <button
-                onClick={handleSaveGlobalSettings}
-                disabled={thresholdSaving || thresholdLoading}
-                className="px-3 py-2 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
-              >
-                {thresholdSaving ? 'Saving...' : 'Save global settings'}
-              </button>
-            </div>
-          </div>
 
           {/* Archive Now panel */}
           <div className="bg-white border border-gray-200 rounded-xl p-5 mt-6">
             <h3 className="font-semibold mb-1">Archive Resolved Incidents</h3>
             <p className="text-sm text-gray-500 mb-4">
-              Runs automatically every 24 hours. Use this button to trigger it immediately — any resolved incident older than the retention period above will be moved to the archive.
+              Runs automatically every 24 hours. Use this button to trigger it immediately — any resolved incident older than the configured retention period will be moved to the archive.
             </p>
 
             <button
@@ -1045,7 +1003,50 @@ export default function Setup() {
                 Reset to company default
               </button>
             </div>
+           <div className="mt-6 pt-5 border-t border-gray-200">
+          <label className="block text-xs text-gray-600 mb-1">
+            Resolved incident retention period (days)
+          </label>
+
+          <p className="text-xs text-gray-400 mb-2">
+            Resolved incidents older than this will be moved to the archive automatically.
+            Archived records are never deleted.
+          </p>
+
+          <input
+            type="number"
+            min={1}
+            max={365}
+            value={thresholdLoading ? '' : retentionDays}
+            onChange={event => {
+              setThresholdSuccess(false)
+              setThresholdError('')
+              setRetentionDays(event.target.value)
+            }}
+            placeholder={thresholdLoading ? 'Loading...' : '30'}
+            className="w-full px-3 py-2 border rounded disabled:bg-gray-50 disabled:text-gray-400"
+            disabled={thresholdLoading || thresholdSaving}
+          />
+
+          {thresholdError && (
+            <p className="text-xs text-red-600 mt-1">{thresholdError}</p>
+          )}
+
+          {thresholdSuccess && (
+            <p className="text-xs text-green-600 mt-1">Settings saved.</p>
+          )}
+
+          <div className="mt-4">
+            <button
+              onClick={handleSaveGlobalSettings}
+              disabled={thresholdSaving || thresholdLoading}
+              className="px-3 py-2 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {thresholdSaving ? 'Saving...' : 'Save retention period'}
+            </button>
           </div>
+        </div>
+      </div>
 
           <div className="flex items-center gap-2 mb-3">
             <h2 className="text-lg font-semibold text-gray-800">Alert Recipients</h2>
