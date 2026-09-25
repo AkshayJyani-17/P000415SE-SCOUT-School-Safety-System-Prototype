@@ -379,6 +379,14 @@ export default function IncidentDetail() {
             </h1>
           </div>
           <div className="flex gap-2 shrink-0">
+            {found.isTest && (
+              <span
+                title="Sent from Alert Testing. Not a real emergency."
+                className="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800 border border-amber-200 font-semibold whitespace-nowrap"
+              >
+                TEST
+              </span>
+            )}
             <span className={`text-xs px-2 py-1 rounded ${priorityColors[found.priority]}`}>
               {found.priority}
             </span>
