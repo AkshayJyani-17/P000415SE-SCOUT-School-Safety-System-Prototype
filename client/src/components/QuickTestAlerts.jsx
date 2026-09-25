@@ -41,6 +41,8 @@ export default function QuickTestAlerts({ locations = [] }) {
   const [types, setTypes] = useState([])
   const [loading, setLoading] = useState(true)
   const [pendingType, setPendingType] = useState(null)
+  const [recipients, setRecipients] = useState(null)
+  const [recipientsError, setRecipientsError] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
   const [lastTest, setLastTest] = useState(null)
@@ -52,15 +54,31 @@ export default function QuickTestAlerts({ locations = [] }) {
     setupAPI.getAlertTypes('emergency')
       .then(data => {
         if (!active) return
-        const configured = (data.alertTypes || [])
+        // An empty list means no emergency types are configured, which is different from a
+        // failed request: showing hardcoded types would name alerts nobody set up.
+        setTypes((data.alertTypes || [])
           .filter(type => type?.label)
           .map(type => ({ label: type.label, emoji: type.emoji || '🚨' }))
-        setTypes((configured.length ? configured : FALLBACK_TYPES).slice(0, MAX_BUTTONS))
+          .slice(0, MAX_BUTTONS))
       })
       .catch(() => { if (active) setTypes(FALLBACK_TYPES.slice(0, MAX_BUTTONS)) })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [])
+
+  // Opening the confirmation shows who this alert type routes to, so the admin can check
+  // routing without sending anything to staff.
+  const openConfirm = type => {
+    setPendingType(type)
+    setError('')
+    setLastTest(null)
+    setRecipients(null)
+    setRecipientsError('')
+
+    incidentAPI.previewRecipients(toIncidentType(type.label))
+      .then(data => setRecipients(data.recipients || []))
+      .catch(() => setRecipientsError('Could not load the recipients for this alert type.'))
+  }
 
   const handleSend = async () => {
     if (!pendingType || sending) return
@@ -77,8 +95,6 @@ export default function QuickTestAlerts({ locations = [] }) {
     }
   }
 
-  if (!loading && types.length === 0) return null
-
   return (
     <section aria-labelledby="quick-test-heading" className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
       <div className="flex items-center gap-2 mb-1">
@@ -94,13 +110,18 @@ export default function QuickTestAlerts({ locations = [] }) {
 
       {loading ? (
         <p className="text-sm text-gray-400">Loading alert types...</p>
+      ) : types.length === 0 ? (
+        <p className="text-sm text-gray-500">
+          No emergency alert types are configured yet, so there is nothing to test. A Company Admin
+          adds them under Setup, Alert Types.
+        </p>
       ) : (
         <div className="grid grid-cols-2 gap-2">
           {types.map(type => (
             <button
               key={type.label}
               type="button"
-              onClick={() => { setPendingType(type); setError(''); setLastTest(null) }}
+              onClick={() => openConfirm(type)}
               className="flex items-center gap-2 px-3 py-3 border border-gray-200 rounded-lg text-left hover:border-amber-400 hover:bg-amber-50 transition-colors"
             >
               <span aria-hidden="true" className="text-lg">{type.emoji}</span>
@@ -139,8 +160,7 @@ export default function QuickTestAlerts({ locations = [] }) {
               Send {pendingType.label} test alert?
             </h3>
             <p className="text-sm text-gray-500 mt-1">
-              This creates a test incident that you and other admins at your school can review. No
-            notifications are sent to staff.
+              This creates a test incident that you and other admins at your school can review.
             </p>
             <dl className="mt-4 text-sm bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-1">
               <div className="flex gap-2"><dt className="text-gray-500 w-20">Type</dt><dd className="text-gray-800">{pendingType.emoji} {pendingType.label}</dd></div>
@@ -148,8 +168,32 @@ export default function QuickTestAlerts({ locations = [] }) {
               <div className="flex gap-2"><dt className="text-gray-500 w-20">Location</dt><dd className="text-gray-800">{location}</dd></div>
               <div className="flex gap-2"><dt className="text-gray-500 w-20">Title</dt><dd className="text-gray-800">{TEST_TITLE_PREFIX}: {pendingType.label} alert</dd></div>
             </dl>
+            <section aria-label="Notification recipients" className="mt-3">
+              <h4 className="text-xs font-semibold text-gray-600 mb-1">
+                Configured recipients{recipients ? ` (${recipients.length})` : ''}
+              </h4>
+              {recipientsError ? (
+                <p className="text-xs text-red-600">{recipientsError}</p>
+              ) : recipients === null ? (
+                <p className="text-xs text-gray-400">Checking who this alert type routes to...</p>
+              ) : recipients.length === 0 ? (
+                <p className="text-xs text-amber-800">
+                  No recipients are configured for this alert type. Set them under Alert Recipients.
+                </p>
+              ) : (
+                <ul className="text-xs text-gray-600 space-y-0.5">
+                  {recipients.map((recipient, index) => (
+                    <li key={`${recipient.email || recipient.phone}-${index}`}>
+                      {recipient.name || recipient.email || recipient.phone}
+                      {recipient.role ? ` · ${recipient.role}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
             <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-3">
-              For testing purposes only. Do not use during a real emergency.
+              For testing purposes only. Recipients are not notified, so no staff are alarmed.
             </p>
             {error && <p role="alert" className="text-xs text-red-600 mt-2">{error}</p>}
             <div className="flex gap-3 mt-4">

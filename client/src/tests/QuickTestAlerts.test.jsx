@@ -21,7 +21,12 @@ vi.mock('../context/AuthContext', () => ({ useAuth: () => auth }))
 vi.mock('../api/client', () => ({
   incidentAPI: {
     create: vi.fn(() => Promise.resolve({ id: 'inc-1', incidentNumber: 'INC-0007' })),
-    previewRecipients: vi.fn(() => Promise.resolve({ recipients: [] })),
+    previewRecipients: vi.fn(() => Promise.resolve({
+      recipients: [
+        { name: 'Fire Warden', email: 'warden@school.edu', role: 'staff' },
+        { name: 'Office Manager', phone: '0400000000', role: 'schoolAdmin' },
+      ],
+    })),
   },
   schoolAPI: { list: vi.fn(() => Promise.resolve({ schools: [] })) },
   setupAPI: {
@@ -82,7 +87,7 @@ describe('Quick test alerts on the Alert Testing page', () => {
     const dialog = await openConfirm()
 
     expect(await screen.findByText('TESTING ONLY')).toBeInTheDocument()
-    expect(dialog).toHaveTextContent('For testing purposes only. Do not use during a real emergency.')
+    expect(dialog).toHaveTextContent('For testing purposes only. Recipients are not notified, so no staff are alarmed.')
   })
 
   test('asks for confirmation before sending anything', async () => {
@@ -125,6 +130,44 @@ describe('Quick test alerts on the Alert Testing page', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Network down')
     expect(screen.getByRole('button', { name: 'Send test alert' })).toBeEnabled()
+  })
+
+  test('the confirmation shows who the alert type routes to', async () => {
+    await openConfirm()
+
+    expect(incidentAPI.previewRecipients).toHaveBeenCalledWith('fire')
+    expect(await screen.findByText('Configured recipients (2)')).toBeInTheDocument()
+    expect(screen.getByText(/Fire Warden/)).toBeInTheDocument()
+    expect(screen.getByText(/Office Manager/)).toBeInTheDocument()
+  })
+
+  test('warns when an alert type has no recipients configured', async () => {
+    incidentAPI.previewRecipients.mockResolvedValueOnce({ recipients: [] })
+    await openConfirm()
+
+    expect(await screen.findByText(/No recipients are configured for this alert type/)).toBeInTheDocument()
+    // Sending is still allowed: the admin may be testing before setting recipients up.
+    expect(screen.getByRole('button', { name: 'Send test alert' })).toBeEnabled()
+  })
+
+  test('points to Setup when no emergency types are configured', async () => {
+    setupAPI.getAlertTypes.mockImplementation(category =>
+      Promise.resolve({ alertTypes: category === 'emergency' ? [] : [{ label: 'Medical' }] })
+    )
+    renderPage()
+
+    expect(await screen.findByText(/No emergency alert types are configured yet/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Test / })).not.toBeInTheDocument()
+  })
+
+  test('falls back to common types only when the request fails', async () => {
+    setupAPI.getAlertTypes.mockImplementation(category =>
+      category === 'emergency' ? Promise.reject(new Error('offline')) : Promise.resolve({ alertTypes: [] })
+    )
+    renderPage()
+
+    expect(await screen.findByRole('button', { name: 'Test Fire' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Test Lockdown' })).toBeInTheDocument()
   })
 
   test('is hidden from staff, who use the normal submit form', async () => {
