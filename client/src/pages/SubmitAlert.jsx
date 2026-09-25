@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { incidentAPI, schoolAPI, setupAPI } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import QuickTestAlerts from '../components/QuickTestAlerts'
 
 const FALLBACK_ALERT_TYPES = [
   { value: 'medical', label: '🏥 Medical' },
@@ -173,6 +174,9 @@ export default function SubmitAlert() {
             : 'Create a structured alert with the key details staff need to respond.'}
         </p>
       </div>
+
+      {/* Quick test alerts: School Admins only — Company Admins must pick a school first */}
+      {isSchoolAdmin && !isCompanyAdmin && <QuickTestAlerts locations={locations} />}
 
       {/* Form */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-5">
