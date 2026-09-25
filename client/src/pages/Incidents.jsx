@@ -478,6 +478,11 @@ export default function Incidents() {
                       {overdue ? ` · Unacknowledged for ${formatDuration(elapsedMinutes)}` : ''}
                     </p>
                   </div>
+                  {incident.isTest && (
+                    <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 font-semibold whitespace-nowrap">
+                      TEST
+                    </span>
+                  )}
                   <span className={`text-xs px-2 py-0.5 rounded ${priorityColors[incident.priority]}`}>
                     {incident.priority}
                   </span>

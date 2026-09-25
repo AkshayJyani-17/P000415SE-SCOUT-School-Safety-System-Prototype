@@ -424,6 +424,11 @@ function loadSource(name) {
   return source.inFlight
 }
 
+// Test alerts from the Alert Testing page must not distort a school's real statistics.
+function excludeTestIncidents(incidents) {
+  return incidents.filter(incident => incident.isTest !== true)
+}
+
 function scopeToSchool(records, schoolId) {
   return schoolId ? records.filter(record => record.schoolId === schoolId) : records
 }
@@ -464,7 +469,7 @@ async function getAnalytics(options = {}) {
   if (cached) return cached
 
   const data = buildAnalyticsFrom(
-    scopeToSchool(incidents, schoolId),
+    scopeToSchool(excludeTestIncidents(incidents), schoolId),
     scopeToSchool(notifications, schoolId),
     { includeFailedAlerts }
   )
@@ -484,7 +489,7 @@ async function getTrends(options = {}) {
   const cached = readDerived(key, stamp)
   if (cached) return cached
 
-  const data = buildTrendsFrom(scopeToSchool(incidents, schoolId), { range })
+  const data = buildTrendsFrom(scopeToSchool(excludeTestIncidents(incidents), schoolId), { range })
   return writeDerived(key, stamp, data)
 }
 
@@ -498,6 +503,7 @@ function invalidateAnalyticsCache() {
 
 module.exports = {
   getAnalytics,
+  excludeTestIncidents,
   getTrends,
   invalidateAnalyticsCache,
   buildAnalyticsFrom,

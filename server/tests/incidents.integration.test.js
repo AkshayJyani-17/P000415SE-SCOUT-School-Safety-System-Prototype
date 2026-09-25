@@ -628,3 +628,45 @@ test('PATCH /api/incidents/:id/status updates incident status', async () => {
     assert.equal(updated.acknowledgedBy[0].email, 'admin@school.edu')
   })
 })
+
+test('POST /api/incidents stores and returns the isTest flag for quick test alerts', async () => {
+  fakeDb = createTestDb({
+    users: { 'school-admin-uid': { name: 'School Admin', role: 'schoolAdmin', schoolId: 'school_alpha' } },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await fetch(`${baseUrl}/api/incidents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer school-token' },
+      body: JSON.stringify({
+        isTest: true,
+        type: 'fire',
+        priority: 'critical',
+        title: 'TEST: Fire alert',
+        location: 'Alert testing',
+      }),
+    })
+
+    assert.equal(response.status, 201)
+    const payload = await response.json()
+    assert.equal(payload.isTest, true)
+    assert.equal(fakeDb.stores.incidents.get(payload.id).isTest, true)
+  })
+})
+
+test('POST /api/incidents marks a normal alert as not a test', async () => {
+  fakeDb = createTestDb({
+    users: { 'school-admin-uid': { name: 'School Admin', role: 'schoolAdmin', schoolId: 'school_alpha' } },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await fetch(`${baseUrl}/api/incidents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer school-token' },
+      body: JSON.stringify({ type: 'fire', priority: 'critical', title: 'Fire in Block A', location: 'Block A' }),
+    })
+
+    assert.equal(response.status, 201)
+    assert.equal((await response.json()).isTest, false)
+  })
+})

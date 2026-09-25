@@ -214,6 +214,7 @@ function toIncidentResponse(incident) {
     assignedUserIds: Array.isArray(incident.assignedUserIds) ? incident.assignedUserIds : [],
     assignedUserEmails: Array.isArray(incident.assignedUserEmails) ? incident.assignedUserEmails : [],
     description: incident.description || '',
+    isTest: incident.isTest === true,
     acknowledgedBy: incident.acknowledgedBy || [],  // ← added
     inProgressBy: incident.inProgressBy || [],
     notifications: [],
@@ -332,7 +333,7 @@ router.get('/preview/recipients', verifyToken, async (req, res, next) => {
 
 router.post('/', verifyToken, async (req, res, next) => {
   try {
-    const { type, priority, status, title, location, description } = req.body
+    const { type, priority, status, title, location, description, isTest } = req.body
     const now = new Date().toISOString()
     const reporter = await getUserProfile(req.user)
 
@@ -360,6 +361,8 @@ router.post('/', verifyToken, async (req, res, next) => {
       title: title || 'Untitled incident',
       location: location || 'Unknown',
       description: description || '',
+      // Alerts sent from the School Admin Alert Testing page are drills, not real incidents.
+      isTest: isTest === true,
       triggeredByName: reporter.name,
       triggeredById: reporter.uid,
       triggeredByEmail: reporter.email,
