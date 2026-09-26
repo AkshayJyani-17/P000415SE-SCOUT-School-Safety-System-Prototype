@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { archiveAPI, settingsAPI, setupAPI } from '../api/client'
 import AlertTypeSelect from '../components/AlertTypeSelect'
 import { useAuth } from '../context/AuthContext'
-import { useSchools } from '../context/SchoolsContext'
 import { applyRecipientPhone } from '../utils/routingRecipients'
 
 const EMOJI_OPTIONS = ['🏥', '🔥', '🔒', '⚠️', '🌩️', '🔧', '📢', '🚨', '🛡️', '🌊']
@@ -36,23 +35,6 @@ function formatRole(role) {
 export default function Setup() {
   const { isCompanyAdmin, isSchoolAdmin } = useAuth()
   const navigate = useNavigate()
-
-  const {
-    allSchools,
-    loading: schoolsLoading,
-    error: schoolsError,
-    createSchool,
-    renameSchool,
-    setSchoolActive,
-  } = useSchools()
-
-  // ── Schools (Company Admin) ───────────────────────────────────────────────
-  const [newSchoolName, setNewSchoolName] = useState('')
-  const [addingSchool, setAddingSchool] = useState(false)
-  const [schoolFormError, setSchoolFormError] = useState('')
-  const [editingSchoolId, setEditingSchoolId] = useState(null)
-  const [editSchoolName, setEditSchoolName] = useState('')
-  const [savingSchoolId, setSavingSchoolId] = useState(null)
 
   const [alertTypes, setAlertTypes] = useState([])
   const [locations, setLocations] = useState([])
@@ -521,73 +503,6 @@ export default function Setup() {
     }
   }
 
-  async function handleAddSchool() {
-    const name = newSchoolName.trim()
-    if (!name) {
-      setSchoolFormError('School name is required.')
-      return
-    }
-
-    setAddingSchool(true)
-    setSchoolFormError('')
-    try {
-      // Goes through SchoolsContext rather than the API directly, so the
-      // shared list refreshes and the school appears in every dropdown at
-      // once — not just on this page.
-      await createSchool(name)
-      setNewSchoolName('')
-    } catch (err) {
-      setSchoolFormError(err.message || 'Failed to add school.')
-    } finally {
-      setAddingSchool(false)
-    }
-  }
-
-  function handleEditSchool(school) {
-    setEditingSchoolId(school.id)
-    setEditSchoolName(school.name || '')
-    setSchoolFormError('')
-  }
-
-  function handleCancelEditSchool() {
-    setEditingSchoolId(null)
-    setEditSchoolName('')
-  }
-
-  async function handleSaveSchoolName(schoolId) {
-    const name = editSchoolName.trim()
-    if (!name) {
-      setSchoolFormError('School name is required.')
-      return
-    }
-
-    setSavingSchoolId(schoolId)
-    setSchoolFormError('')
-    try {
-      await renameSchool(schoolId, name)
-      setEditingSchoolId(null)
-      setEditSchoolName('')
-    } catch (err) {
-      setSchoolFormError(err.message || 'Failed to rename school.')
-    } finally {
-      setSavingSchoolId(null)
-    }
-  }
-
-  async function handleToggleSchoolActive(school) {
-    setSavingSchoolId(school.id)
-    setSchoolFormError('')
-    try {
-      await setSchoolActive(school.id, school.active === false)
-    } catch (err) {
-      // The server refuses to deactivate a school that still has an open
-      // incident; surface that reason rather than failing silently.
-      setSchoolFormError(err.message || 'Failed to update school.')
-    } finally {
-      setSavingSchoolId(null)
-    }
-  }
-
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">Setup</h1>
@@ -615,124 +530,6 @@ export default function Setup() {
           Test Alert
         </button>
       )}
-
-      {isCompanyAdmin && (
-        <div className="mb-8">
-          <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-lg font-semibold text-gray-800">Schools</h2>
-            <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-medium">Company Admin</span>
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-xl p-5">
-            <p className="text-sm text-gray-500 mb-4">
-              Schools are read from the database, never from a fixed list. A school added here becomes
-              available immediately in every school dropdown across SCOUT.
-            </p>
-
-            {schoolsError && <p className="text-xs text-red-600 mb-2">{schoolsError}</p>}
-            {schoolFormError && (
-              <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">{schoolFormError}</p>
-            )}
-
-            <div className="space-y-2 mb-4">
-              {schoolsLoading && allSchools.length === 0 && (
-                <p className="text-sm text-gray-400">Loading schools...</p>
-              )}
-              {!schoolsLoading && allSchools.length === 0 && (
-                <p className="text-sm text-gray-400">No schools yet. Add the first one below.</p>
-              )}
-
-              {allSchools.map(school => {
-                const isInactive = school.active === false
-                const isEditingSchool = editingSchoolId === school.id
-                const busy = savingSchoolId === school.id
-
-                return (
-                  <div
-                    key={school.id}
-                    className={`flex items-center gap-2 p-2 rounded-lg ${isInactive ? 'bg-gray-100' : 'bg-gray-50'}`}
-                  >
-                    {isEditingSchool ? (
-                      <>
-                        <input
-                          className="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
-                          value={editSchoolName}
-                          onChange={event => setEditSchoolName(event.target.value)}
-                          onKeyDown={event => event.key === 'Enter' && handleSaveSchoolName(school.id)}
-                          autoFocus
-                        />
-                        <button
-                          onClick={() => handleSaveSchoolName(school.id)}
-                          disabled={busy}
-                          className="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-60 transition-colors"
-                        >
-                          {busy ? 'Saving...' : 'Save'}
-                        </button>
-                        <button
-                          onClick={handleCancelEditSchool}
-                          className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-100 text-gray-600 transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-800 truncate">
-                            {school.name}
-                            {isInactive && (
-                              <span className="ml-2 text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">Inactive</span>
-                            )}
-                          </p>
-                          <p className="text-xs text-gray-400 truncate">{school.id}</p>
-                        </div>
-                        <button
-                          onClick={() => handleEditSchool(school)}
-                          className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-100 text-gray-600 transition-colors"
-                        >
-                          Rename
-                        </button>
-                        <button
-                          onClick={() => handleToggleSchoolActive(school)}
-                          disabled={busy}
-                          className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-100 text-gray-600 disabled:opacity-60 transition-colors"
-                        >
-                          {busy ? '...' : isInactive ? 'Activate' : 'Deactivate'}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-
-            <div className="border-t border-gray-100 pt-3">
-              <p className="text-xs font-medium text-gray-500 mb-2">Add new school</p>
-              <div className="flex gap-2">
-                <input
-                  className="flex-1 border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
-                  placeholder="e.g. Bunbury Senior High"
-                  value={newSchoolName}
-                  onChange={event => setNewSchoolName(event.target.value)}
-                  onKeyDown={event => event.key === 'Enter' && handleAddSchool()}
-                />
-                <button
-                  onClick={handleAddSchool}
-                  disabled={addingSchool}
-                  className="px-3 py-1.5 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:opacity-50 transition-colors"
-                >
-                  {addingSchool ? 'Adding...' : 'Add'}
-                </button>
-              </div>
-              <p className="text-xs text-gray-400 mt-2">
-                Schools are never deleted — deactivating hides a school from dropdowns while keeping its
-                incident history intact. A school with an open incident cannot be deactivated.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
 
       {isCompanyAdmin && (
         <div>

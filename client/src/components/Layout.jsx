@@ -3,6 +3,7 @@ import {
   Bell,
   CheckCircle2,
   ClipboardList,
+  GraduationCap,
   LayoutDashboard,
   LogOut,
   PlusCircle,
@@ -94,6 +95,7 @@ export default function Layout({ children }) {
       title: 'SCOUT Setup / Config',
       visible: isCompanyAdmin || isSchoolAdmin,
       items: [
+        { path: '/schools', label: 'School Management', icon: GraduationCap, visible: isCompanyAdmin },
         { path: '/setup', label: 'Setup', icon: Settings, visible: isCompanyAdmin || isSchoolAdmin },
         { path: '/submit', label: 'Alert Testing', icon: Siren, visible: isSchoolAdmin || isCompanyAdmin },
       ],

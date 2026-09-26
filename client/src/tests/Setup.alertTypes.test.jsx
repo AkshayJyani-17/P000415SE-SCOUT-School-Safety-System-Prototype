@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import Setup from '../pages/Setup'
+import SchoolManagement from '../pages/SchoolManagement'
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom')
@@ -120,5 +121,14 @@ describe('School Admin emergency type dropdown', () => {
 
     await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument())
     expect(await screen.findByRole('heading', { name: 'Natural Disaster' })).toBeInTheDocument()
+  })
+})
+
+describe('PBI 3 school management page', () => {
+  test('shows school management on its own page', () => {
+    render(<SchoolManagement />)
+
+    expect(screen.getByRole('heading', { name: /school management/i })).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/school name/i)).toBeInTheDocument()
   })
 })

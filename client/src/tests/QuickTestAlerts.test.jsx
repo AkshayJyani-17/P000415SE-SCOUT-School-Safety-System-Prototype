@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import SubmitAlert from '../pages/SubmitAlert'
+import QuickActions from '../components/QuickActions'
 import { incidentAPI, setupAPI } from '../api/client'
 
 // One School Admin session drives every test; the role flags are swapped per test.
@@ -19,6 +20,7 @@ const auth = {
 vi.mock('../context/AuthContext', () => ({ useAuth: () => auth }))
 
 vi.mock('../api/client', () => ({
+  apiCall: vi.fn(() => Promise.resolve({ success: true })),
   incidentAPI: {
     create: vi.fn(() => Promise.resolve({ id: 'inc-1', incidentNumber: 'INC-0007' })),
     previewRecipients: vi.fn(() => Promise.resolve({
@@ -177,5 +179,21 @@ describe('Quick test alerts on the Alert Testing page', () => {
 
     expect(await screen.findByRole('heading', { name: 'Submit Alert' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Quick test alerts' })).not.toBeInTheDocument()
+  })
+})
+
+describe('PBI 2 quick emergency alert', () => {
+  test('selecting an emergency type sends the alert without confirmation or 000', async () => {
+    const { apiCall } = await import('../api/client')
+    auth.isSchoolAdmin = false
+    auth.isStaff = true
+
+    render(<QuickActions />)
+    fireEvent.click(await screen.findByRole('button', { name: /emergency alert/i }))
+    fireEvent.click((await screen.findByText('Fire')).closest('button'))
+
+    await waitFor(() => expect(apiCall).toHaveBeenCalled())
+    expect(screen.queryByText(/are you sure you want to proceed/i)).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/enter 000/i)).not.toBeInTheDocument()
   })
 })
