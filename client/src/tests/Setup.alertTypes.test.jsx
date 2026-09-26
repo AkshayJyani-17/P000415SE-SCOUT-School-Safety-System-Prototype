@@ -124,7 +124,7 @@ describe('School Admin emergency type dropdown', () => {
   })
 })
 
-describe('PBI 3 school management page', () => {
+describe('School management page', () => {
   test('shows school management on its own page', () => {
     render(<SchoolManagement />)
 

@@ -182,7 +182,7 @@ describe('Quick test alerts on the Alert Testing page', () => {
   })
 })
 
-describe('PBI 2 quick emergency alert', () => {
+describe('Quick emergency alert', () => {
   test('selecting an emergency type sends the alert without confirmation or 000', async () => {
     const { apiCall } = await import('../api/client')
     auth.isSchoolAdmin = false
