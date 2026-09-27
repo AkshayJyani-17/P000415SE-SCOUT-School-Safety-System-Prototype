@@ -1,5 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
+import StaffIncidentStatus from '../components/StaffIncidentStatus'
+import { subscribeToIncidents } from '../api/client'
 import QuickActions from '../components/QuickActions'
 import ShortcutCard from '../components/ShortcutCard'
 import QuickViewStrip from '../components/QuickViewStrip'
@@ -135,6 +137,7 @@ export default function Dashboard() {
   )
 
   const [loading, setLoading] = useState(true)
+  const [connection, setConnection] = useState('connecting')
   const [overdueThresholdMinutes, setOverdueThresholdMinutes] = useState(15)
 
   useEffect(() => {
@@ -142,6 +145,15 @@ export default function Dashboard() {
   }, [selectedSchool])
 
   useEffect(() => {
+    if (isStaff) {
+      return subscribeToIncidents(data => {
+        setIncidents(data)
+        setLoading(false)
+      }, state => {
+        setConnection(state)
+        if (state === 'error') setLoading(false)
+      })
+    }
     const fetchIncidents = async () => {
       try {
         setLoading(true)
@@ -166,7 +178,7 @@ export default function Dashboard() {
     }
 
     fetchIncidents()
-  }, [])
+  }, [isStaff, currentUser?.uid])
 
   const dashboardIncidents =
     isCompanyAdmin && selectedSchool !== 'all'
@@ -235,7 +247,7 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="p-6 max-w-5xl mx-auto">
+      <div className="p-4 sm:p-6 max-w-5xl mx-auto">
         <p className="text-gray-500 text-center py-10">
           Loading incidents...
         </p>
@@ -244,9 +256,9 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto">
       {/* ── Header ── */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
           <div className="flex items-center gap-2 mb-0.5">
             <h1 className="text-2xl font-bold text-gray-900">
@@ -338,6 +350,8 @@ export default function Dashboard() {
         <SchoolAdminStatus incidents={incidents} />
       )}
 
+      {isStaff && <StaffIncidentStatus incidents={incidents} connection={connection} />}
+
       {/* ── Quick Actions (Staff live-use only) ── */}
       {isStaff && (
         <div className="bg-white border border-gray-200 rounded-xl p-5 mb-6">
@@ -346,7 +360,7 @@ export default function Dashboard() {
       )}
 
       {/* ── Unacknowledged alerts ── */}
-      {unacked.length > 0 && (
+      {!isStaff && unacked.length > 0 && (
         <div className="mb-6">
           <div className="flex items-center gap-2 mb-2">
             <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block" />
@@ -444,6 +458,7 @@ export default function Dashboard() {
       )}
 
       {/* ── Recent incidents ── */}
+      {!isStaff && (
       <div>
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-semibold text-gray-900">
@@ -537,6 +552,7 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      )}
     </div>
   )
 }

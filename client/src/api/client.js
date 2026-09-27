@@ -170,3 +170,48 @@ export const archiveAPI = {
   trigger: () => request('/settings/archive', { method: 'POST' }),
   list: () => request('/incidents/archived').then(data => data.incidents ?? []),
 }
+// Fetch-based SSE keeps Firebase credentials in headers, with automatic reconnect.
+export function subscribeToIncidents(onData, onState) {
+  const controller = new AbortController()
+  let retryTimer
+  async function connect() {
+    try {
+      onState('connecting')
+      let response = await sendRequest('/incidents/stream', { signal: controller.signal })
+      if (response.status === 401) response = await sendRequest('/incidents/stream', { signal: controller.signal }, true)
+      if (!response.ok || !response.body) throw new Error('Incident stream unavailable')
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      try {
+        while (!controller.signal.aborted) {
+          const { value, done } = await reader.read()
+          if (done) throw new Error('Incident stream closed')
+          buffer += decoder.decode(value, { stream: true })
+          let boundary
+          while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+            const event = buffer.slice(0, boundary)
+            buffer = buffer.slice(boundary + 2)
+            if (event.startsWith('data: ')) {
+              onData(JSON.parse(event.slice(6)).incidents)
+              onState('live')
+            }
+          }
+        }
+      } finally {
+        await reader.cancel().catch(() => {})
+        reader.releaseLock()
+      }
+    } catch {
+      if (!controller.signal.aborted) {
+        onState('error')
+        retryTimer = setTimeout(connect, 5000)
+      }
+    }
+  }
+  connect()
+  return () => {
+    controller.abort()
+    clearTimeout(retryTimer)
+  }
+}

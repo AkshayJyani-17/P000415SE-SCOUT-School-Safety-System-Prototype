@@ -9,6 +9,8 @@ const {
   setCachedIncidentList,
 } = require('../incidentListCache')
 
+const { watchIncidents } = require('../incidentStream')
+
 const router = express.Router()
 
 async function verifyToken(req, res, next) {
@@ -245,6 +247,38 @@ router.get('/', verifyToken, async (req, res, next) => {
 })
 // GET /api/incidents/archived — company admin only; reads from archivedIncidents collection
 // Must be registered before /:id to prevent Express treating 'archived' as an ID
+// Authenticated, role-scoped live status stream. Renew periodically to recheck access.
+router.get('/stream', verifyToken, async (req, res, next) => {
+  let unsubscribe = () => {}
+  let heartbeat
+  let renewal
+  let closed = false
+  const close = () => {
+    closed = true
+    clearInterval(heartbeat)
+    clearTimeout(renewal)
+    unsubscribe()
+    if (!res.writableEnded) res.end()
+  }
+  res.on('close', close)
+  try {
+    const profile = await getUserProfile(req.user)
+    if (closed) return
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' })
+    res.flushHeaders()
+    heartbeat = setInterval(() => res.write(': keepalive\n\n'), 15000)
+    renewal = setTimeout(close, 60000)
+    unsubscribe = watchIncidents(getDb(), profile, records => {
+      if (closed) return
+      const incidents = records.sort((a, b) => getSortValue(b) - getSortValue(a)).map(toIncidentResponse)
+      res.write(`data: ${JSON.stringify({ incidents })}\n\n`)
+    }, close)
+    if (closed) unsubscribe()
+  } catch (error) {
+    if (res.headersSent) close()
+    else next(error)
+  }
+})
 router.get('/archived', verifyToken, async (req, res, next) => {
   try {
     const profile = await getUserProfile(req.user)
