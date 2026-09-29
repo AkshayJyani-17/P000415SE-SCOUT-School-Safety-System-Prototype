@@ -146,6 +146,16 @@ export const analyticsAPI = {
   trends: (range = 'week', schoolId) => request(`/analytics/trends${analyticsQuery({ range, schoolId })}`),
 }
 
+// Personal quick alert shortcuts. Every response returns the owner's full list
+// plus the limit, so the caller never has to merge state by hand.
+export const quickAlertsAPI = {
+  list: () => request('/quick-alerts'),
+  create: data => request('/quick-alerts', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id, data) =>
+    request(`/quick-alerts/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+  remove: id => request(`/quick-alerts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+}
+
 export const settingsAPI = {
   get: () => request('/settings'),
   update: (fields) =>

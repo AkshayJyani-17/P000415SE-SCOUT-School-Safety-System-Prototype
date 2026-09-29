@@ -9,6 +9,7 @@ import {
   PlusCircle,
   Settings,
   Siren,
+  Zap,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, Navigate, useLocation } from 'react-router-dom'
@@ -110,6 +111,13 @@ export default function Layout({ children }) {
       ],
     },
     {
+      title: 'My Settings',
+      visible: isStaff,
+      items: [
+        { path: '/my-quick-alerts', label: 'My Quick Alerts', icon: Zap, visible: isStaff },
+      ],
+    },
+    {
       title: 'Data & Insights',
       visible: isSchoolAdmin || isCompanyAdmin,
       items: [
@@ -157,7 +165,7 @@ export default function Layout({ children }) {
           </div>
           <button
             onClick={dismissBanner}
-            className="text-white text-xs opacity-75 hover:opacity-100 px-2 py-1 rounded hover:bg-white hover:bg-opacity-20 transition-colors"
+            className="text-white text-xs opacity-75 hover:opacity-100 px-2 py-1 rounded hover:bg-white/20 transition-colors"
           >
             Dismiss
           </button>

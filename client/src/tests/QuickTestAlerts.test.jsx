@@ -31,6 +31,7 @@ vi.mock('../api/client', () => ({
     })),
   },
   schoolAPI: { list: vi.fn(() => Promise.resolve({ schools: [] })) },
+  quickAlertsAPI: { list: vi.fn(() => Promise.resolve({ quickAlerts: [], limit: 5, remaining: 5 })) },
   setupAPI: {
     // The page asks for every type; quick test alerts ask for the emergency ones only.
     getAlertTypes: vi.fn(category =>

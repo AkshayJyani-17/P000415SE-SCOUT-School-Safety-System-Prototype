@@ -51,6 +51,9 @@ function seed({ incidents = [], notifications = [] } = {}) {
   invalidateAnalyticsCache()
 }
 
+// getAnalytics and getTrends bucket against the real clock, so the default sits
+// at "now". Tests that assert fixed bucket labels pass an explicit createdAt and
+// their own `now` instead.
 function incident(overrides = {}) {
   return {
     id: 'i1',
@@ -59,7 +62,7 @@ function incident(overrides = {}) {
     status: 'triggered',
     location: 'Oval',
     schoolId: 'school_alpha',
-    createdAt: '2026-09-10T02:00:00Z',
+    createdAt: new Date().toISOString(),
     ...overrides,
   }
 }
