@@ -8,6 +8,8 @@ import IncidentDetail from './pages/IncidentDetail'
 import Incidents from './pages/Incidents'
 import Login from './pages/Login'
 import Notifications from './pages/Notifications'
+import SchoolManagement from './pages/SchoolManagement'
+import MyQuickAlerts from './pages/MyQuickAlerts'
 import Setup from './pages/Setup'
 import SubmitAlert from './pages/SubmitAlert'
 
@@ -61,6 +63,21 @@ function SetupRoute({ children }) {
   return children
 }
 
+function CompanyAdminRoute({ children }) {
+  const { isCompanyAdmin } = useAuth()
+  return isCompanyAdmin ? children : <Navigate to="/dashboard" replace />
+}
+
+function StaffRoute({ children }) {
+  const { isStaff, authLoading, userRole } = useAuth()
+
+  if (authLoading || userRole === null) {
+    return null
+  }
+
+  return isStaff ? children : <Navigate to="/dashboard" replace />
+}
+
 function SubmitRoute({ children }) {
   const { isSchoolAdmin, isStaff, isCompanyAdmin, authLoading, userRole } = useAuth()
 
@@ -102,6 +119,8 @@ function AppRoutes() {
       <Route path="/incidents/:id"   element={<PrivateRoute><NotCompanyAdminRoute><Layout><IncidentDetail /></Layout></NotCompanyAdminRoute></PrivateRoute>} />
       <Route path="/submit"          element={<PrivateRoute><SubmitRoute><Layout><SubmitAlert /></Layout></SubmitRoute></PrivateRoute>} />
       <Route path="/setup"           element={<PrivateRoute><SetupRoute><Layout><Setup /></Layout></SetupRoute></PrivateRoute>} />
+      <Route path="/my-quick-alerts" element={<PrivateRoute><StaffRoute><Layout><MyQuickAlerts /></Layout></StaffRoute></PrivateRoute>} />
+      <Route path="/schools"         element={<PrivateRoute><CompanyAdminRoute><Layout><SchoolManagement /></Layout></CompanyAdminRoute></PrivateRoute>} />
       <Route path="/analytics"       element={<PrivateRoute><NotCompanyAdminRoute><Layout><Analytics /></Layout></NotCompanyAdminRoute></PrivateRoute>} />
       <Route path="/notifications"   element={<PrivateRoute><NotCompanyAdminRoute><Layout><Notifications /></Layout></NotCompanyAdminRoute></PrivateRoute>} />
 

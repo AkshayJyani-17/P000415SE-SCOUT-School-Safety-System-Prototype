@@ -9,6 +9,8 @@ const {
   setCachedIncidentList,
 } = require('../incidentListCache')
 
+const { watchIncidents } = require('../incidentStream')
+
 const router = express.Router()
 
 async function verifyToken(req, res, next) {
@@ -61,7 +63,7 @@ function isSchoolAdmin(role) {
 }
 
 function canCreateIncident(role) {
-  return ['schooladmin', 'staff'].includes(normaliseRole(role))
+  return ['companyadmin', 'schooladmin', 'staff'].includes(normaliseRole(role))
 }
 
 async function getUserProfile(decodedUser) {
@@ -214,6 +216,7 @@ function toIncidentResponse(incident) {
     assignedUserIds: Array.isArray(incident.assignedUserIds) ? incident.assignedUserIds : [],
     assignedUserEmails: Array.isArray(incident.assignedUserEmails) ? incident.assignedUserEmails : [],
     description: incident.description || '',
+    isTest: incident.isTest === true,
     acknowledgedBy: incident.acknowledgedBy || [],  // ← added
     inProgressBy: incident.inProgressBy || [],
     notifications: [],
@@ -244,6 +247,38 @@ router.get('/', verifyToken, async (req, res, next) => {
 })
 // GET /api/incidents/archived — company admin only; reads from archivedIncidents collection
 // Must be registered before /:id to prevent Express treating 'archived' as an ID
+// Authenticated, role-scoped live status stream. Renew periodically to recheck access.
+router.get('/stream', verifyToken, async (req, res, next) => {
+  let unsubscribe = () => {}
+  let heartbeat
+  let renewal
+  let closed = false
+  const close = () => {
+    closed = true
+    clearInterval(heartbeat)
+    clearTimeout(renewal)
+    unsubscribe()
+    if (!res.writableEnded) res.end()
+  }
+  res.on('close', close)
+  try {
+    const profile = await getUserProfile(req.user)
+    if (closed) return
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' })
+    res.flushHeaders()
+    heartbeat = setInterval(() => res.write(': keepalive\n\n'), 15000)
+    renewal = setTimeout(close, 60000)
+    unsubscribe = watchIncidents(getDb(), profile, records => {
+      if (closed) return
+      const incidents = records.sort((a, b) => getSortValue(b) - getSortValue(a)).map(toIncidentResponse)
+      res.write(`data: ${JSON.stringify({ incidents })}\n\n`)
+    }, close)
+    if (closed) unsubscribe()
+  } catch (error) {
+    if (res.headersSent) close()
+    else next(error)
+  }
+})
 router.get('/archived', verifyToken, async (req, res, next) => {
   try {
     const profile = await getUserProfile(req.user)
@@ -303,9 +338,36 @@ router.get('/:id', verifyToken, async (req, res, next) => {
   }
 })
 
+// Resolve the same school-scoped routing used to configure alert recipients.
+router.get('/preview/recipients', verifyToken, async (req, res, next) => {
+  try {
+    const profile = await getUserProfile(req.user)
+    if (!canCreateIncident(profile.role)) return res.status(403).json({ error: 'You do not have permission to preview alerts.' })
+    const schoolId = isCompanyAdmin(profile.role) ? req.query.schoolId : profile.schoolId
+    const type = String(req.query.type || '').trim()
+    if (!schoolId || !type) return res.status(400).json({ error: 'School and alert type are required.' })
+
+    const db = getDb()
+    const snapshot = await db.collection('notificationRouting').where('schoolId', '==', schoolId).get()
+    const rule = snapshot.docs.map(doc => doc.data()).find(item =>
+      item.active !== false && String(item.alertType || '').toLowerCase().replace(/\s+/g, '_') === type.toLowerCase()
+    )
+    let recipients = []
+    if (rule && Array.isArray(rule.recipients)) {
+      recipients = rule.recipients.filter(item => item.email || item.phone)
+    } else if (rule && Array.isArray(rule.roles)) {
+      const contacts = await db.collection('notificationRecipients').where('schoolId', '==', schoolId).get()
+      recipients = contacts.docs.map(doc => doc.data()).filter(item => item.active !== false && rule.roles.includes(item.role) && (item.email || item.phone))
+    }
+    res.json({ recipients: recipients.map(({ name, email, phone, notify, role }) => ({ name, email, phone, notify, role })) })
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.post('/', verifyToken, async (req, res, next) => {
   try {
-    const { type, priority, status, title, location, description } = req.body
+    const { type, priority, status, title, location, description, isTest } = req.body
     const now = new Date().toISOString()
     const reporter = await getUserProfile(req.user)
 
@@ -313,8 +375,15 @@ router.post('/', verifyToken, async (req, res, next) => {
       return res.status(403).json({ error: 'You do not have permission to submit incidents.' })
     }
 
-    if (!reporter.schoolId) {
+    const schoolId = isCompanyAdmin(reporter.role) ? req.body.schoolId : reporter.schoolId
+    if (!schoolId) {
       return res.status(403).json({ error: 'Your account is not assigned to a school.' })
+    }
+    let schoolName = reporter.schoolName
+    if (isCompanyAdmin(reporter.role)) {
+      const school = await getDb().collection('schools').doc(schoolId).get()
+      if (!school.exists || school.data().active === false) return res.status(400).json({ error: 'Select an active school.' })
+      schoolName = school.data().name
     }
     const incidentNumber = await getNextIncidentNumber()
 
@@ -326,12 +395,14 @@ router.post('/', verifyToken, async (req, res, next) => {
       title: title || 'Untitled incident',
       location: location || 'Unknown',
       description: description || '',
+      // Alerts sent from the School Admin Alert Testing page are drills, not real incidents.
+      isTest: isTest === true,
       triggeredByName: reporter.name,
       triggeredById: reporter.uid,
       triggeredByEmail: reporter.email,
       triggeredByRole: reporter.role,
-      schoolId: reporter.schoolId,
-      schoolName: reporter.schoolName,
+      schoolId,
+      schoolName,
       assignedUserIds: [],
       assignedUserEmails: [],
       createdAt: now,

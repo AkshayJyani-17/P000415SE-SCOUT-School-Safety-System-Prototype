@@ -22,6 +22,12 @@ vi.mock('../context/AuthContext', () => ({
   }),
 }))
 
+vi.mock('../context/SchoolsContext', () => ({
+  useSchools: () => ({
+    schools: [],
+  }),
+}))
+
 vi.mock('../api/client', () => ({
   incidentAPI: {
     list: vi.fn(() =>

@@ -3,11 +3,13 @@ import {
   Bell,
   CheckCircle2,
   ClipboardList,
+  GraduationCap,
   LayoutDashboard,
   LogOut,
   PlusCircle,
   Settings,
   Siren,
+  Zap,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, Navigate, useLocation } from 'react-router-dom'
@@ -94,6 +96,7 @@ export default function Layout({ children }) {
       title: 'SCOUT Setup / Config',
       visible: isCompanyAdmin || isSchoolAdmin,
       items: [
+        { path: '/schools', label: 'School Management', icon: GraduationCap, visible: isCompanyAdmin },
         { path: '/setup', label: 'Setup', icon: Settings, visible: isCompanyAdmin || isSchoolAdmin },
         { path: '/submit', label: 'Alert Testing', icon: Siren, visible: isSchoolAdmin || isCompanyAdmin },
       ],
@@ -105,6 +108,13 @@ export default function Layout({ children }) {
         { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, visible: true },
         { path: '/submit', label: 'Submit Alert', icon: PlusCircle, visible: isStaff || isCompanyAdmin },
         { path: '/incidents', label: 'Incidents', icon: ClipboardList, visible: isCompanyAdmin || isSchoolAdmin || isStaff },
+      ],
+    },
+    {
+      title: 'My Settings',
+      visible: isStaff,
+      items: [
+        { path: '/my-quick-alerts', label: 'My Quick Alerts', icon: Zap, visible: isStaff },
       ],
     },
     {
@@ -155,7 +165,7 @@ export default function Layout({ children }) {
           </div>
           <button
             onClick={dismissBanner}
-            className="text-white text-xs opacity-75 hover:opacity-100 px-2 py-1 rounded hover:bg-white hover:bg-opacity-20 transition-colors"
+            className="text-white text-xs opacity-75 hover:opacity-100 px-2 py-1 rounded hover:bg-white/20 transition-colors"
           >
             Dismiss
           </button>

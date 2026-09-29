@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { incidentAPI, apiCall, setupAPI } from '../api/client'
+import { incidentAPI, apiCall, quickAlertsAPI, setupAPI } from '../api/client'
 
 const FALLBACK_EMERGENCY_TYPES = [
   { value: 'Natural Disaster', icon: '🌊', desc: 'Earthquake, flood, severe weather' },
@@ -30,6 +31,8 @@ export default function QuickActions() {
   const [showResult, setShowResult] = useState(null)
   const [emergencyTypes, setEmergencyTypes] = useState(FALLBACK_EMERGENCY_TYPES)
   const [action2Types, setAction2Types] = useState(FALLBACK_ACTION2_TYPES)
+  const [customAlerts, setCustomAlerts] = useState([])
+  const [pendingCustom, setPendingCustom] = useState(null)
 
   // Fetch alert types from Firestore — fall back to hardcoded if API unavailable
   useEffect(() => {
@@ -59,8 +62,71 @@ export default function QuickActions() {
         }
       })
       .catch(() => {})
+
+    // Shortcuts whose alert type has since been removed are filtered out here:
+    // they cannot be routed to anyone, and the owner is prompted to fix them on
+    // the My Quick Alerts page instead.
+    quickAlertsAPI.list()
+      .then(data => setCustomAlerts((data.quickAlerts || []).filter(entry => entry.available)))
+      .catch(() => {})
   }, [])
 
+  const handleCustomTrigger = async quickAlert => {
+    setPendingCustom(null)
+    setLoading(true)
+    setCodeError('')
+
+    const alertTypeLabel = quickAlert.alertType?.label
+    const alertTypeValue = quickAlert.alertType?.value
+      || String(alertTypeLabel || '').toLowerCase().replace(/\s+/g, '_')
+    const location = quickAlert.location || 'Dashboard quick action'
+    const message = quickAlert.description || `${quickAlert.label} triggered from quick alerts.`
+
+    try {
+      const incident = await incidentAPI.create({
+        type: alertTypeValue,
+        priority: quickAlert.priority,
+        title: quickAlert.label,
+        location,
+        description: message,
+        triggeredByName: currentUser?.displayName || currentUser?._profileName || 'Unknown',
+        triggeredById: currentUser?.uid || null,
+      })
+
+      const incidentId = incident?.id || null
+
+      // Routing rules are keyed by the alert type's label, so the label is what
+      // must be sent here for the configured recipients to resolve.
+      const data = await apiCall('/notifications/emergency', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: '000',
+          emergencyType: alertTypeLabel,
+          location,
+          message,
+          incidentId,
+          incidentTitle: quickAlert.label,
+        }),
+      })
+
+      if (incidentId) {
+        localStorage.setItem('activeEmergency', JSON.stringify({
+          incidentId,
+          emergencyType: quickAlert.label,
+          triggeredAt: new Date().toISOString(),
+        }))
+        window.dispatchEvent(new Event('emergencyTriggered'))
+      }
+
+      setShowResult(data)
+      setFeedback({ type: quickAlert.label })
+      setTimeout(() => setFeedback(null), 3000)
+    } catch (err) {
+      setCodeError(err.message || 'Could not send that quick alert. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const handleEmergencyClick = () => {
     setShowCategory(true)
@@ -243,6 +309,40 @@ export default function QuickActions() {
         </button>
       </div>
 
+      {customAlerts.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-gray-900">My quick alerts</h3>
+            <Link to="/my-quick-alerts" className="text-xs text-red-600 hover:text-red-700">
+              Manage
+            </Link>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {customAlerts.map(quickAlert => (
+              <button
+                key={quickAlert.id}
+                onClick={() => setPendingCustom(quickAlert)}
+                disabled={loading}
+                className="border-2 border-gray-200 rounded-xl p-3 text-left hover:border-red-400 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              >
+                <div className="flex items-center gap-2">
+                  <span>{quickAlert.alertType?.emoji || '🔔'}</span>
+                  <span className="text-sm font-semibold text-gray-800 truncate">{quickAlert.label}</span>
+                </div>
+                <p className="text-xs text-gray-400 mt-1 truncate">
+                  {quickAlert.alertType?.label}
+                  {quickAlert.location ? ` · ${quickAlert.location}` : ''}
+                </p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {codeError && !showKeypad && (
+        <p className="text-xs text-red-600">{codeError}</p>
+      )}
+
       {feedback && (
         <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 flex items-center gap-2">
           <span className="text-green-600">✅</span>
@@ -254,9 +354,54 @@ export default function QuickActions() {
       )}
 
 
+      {pendingCustom && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setPendingCustom(null)} />
+          <div className="relative bg-white border-2 border-red-500 rounded-xl p-6 max-w-md w-full shadow-xl">
+            <h4 className="font-bold text-gray-900 text-lg mb-1">Send "{pendingCustom.label}"?</h4>
+            <p className="text-sm text-gray-500 mb-4">
+              This alerts the staff configured to receive {pendingCustom.alertType?.label} alerts.
+            </p>
+
+            <dl className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4 space-y-1 text-sm">
+              <div className="flex justify-between gap-3">
+                <dt className="text-gray-500">Alert type</dt>
+                <dd className="text-gray-900 font-medium text-right">{pendingCustom.alertType?.label}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-gray-500">Priority</dt>
+                <dd className="text-gray-900 font-medium text-right capitalize">{pendingCustom.priority}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-gray-500">Location</dt>
+                <dd className="text-gray-900 font-medium text-right">
+                  {pendingCustom.location || 'Not set'}
+                </dd>
+              </div>
+            </dl>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setPendingCustom(null)}
+                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleCustomTrigger(pendingCustom)}
+                disabled={loading}
+                className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:bg-gray-300 transition-colors font-medium"
+              >
+                {loading ? 'Sending...' : 'Send alert'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black bg-opacity-40" onClick={() => setShowConfirm(false)} />
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowConfirm(false)} />
           <div className="relative bg-white border-2 border-red-500 rounded-xl p-6 max-w-md w-full shadow-xl">
             <div className="flex items-start gap-3 mb-4">
               <div className="p-2 bg-red-100 rounded-lg">⚠️</div>
@@ -280,7 +425,7 @@ export default function QuickActions() {
 
       {showCategory && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black bg-opacity-40" onClick={() => setShowCategory(false)} />
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowCategory(false)} />
           <div className="relative bg-white border border-gray-200 rounded-xl p-6 max-w-md w-full shadow-xl">
             <div className="flex items-center justify-between mb-4">
               <h4 className="text-lg font-bold text-gray-900">Select Emergency Type</h4>
@@ -308,7 +453,7 @@ export default function QuickActions() {
 
       {showAction2Category && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black bg-opacity-40" onClick={() => setShowAction2Category(false)} />
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowAction2Category(false)} />
           <div className="relative bg-white border border-gray-200 rounded-xl p-6 max-w-md w-full shadow-xl">
             <div className="flex items-center justify-between mb-4">
               <h4 className="text-lg font-bold text-gray-900">Select Incident Category</h4>
@@ -336,7 +481,7 @@ export default function QuickActions() {
 
       {showKeypad && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black bg-opacity-50" />
+          <div className="absolute inset-0 bg-black/50" />
           <div className="relative bg-white border-2 border-red-500 rounded-xl p-6 max-w-sm w-full shadow-xl">
             <div className="text-center mb-4">
               <div className="text-lg font-semibold mb-2">{selectedType?.icon}</div>
@@ -385,7 +530,7 @@ export default function QuickActions() {
 
       {showResult && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black bg-opacity-40" onClick={() => setShowResult(null)} />
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowResult(null)} />
           <div className="relative bg-white border border-gray-200 rounded-xl p-6 max-w-sm w-full shadow-xl text-center">
             <div className="text-4xl mb-3">✅</div>
             <h4 className="font-bold text-gray-900 text-lg mb-1">Alert sent</h4>

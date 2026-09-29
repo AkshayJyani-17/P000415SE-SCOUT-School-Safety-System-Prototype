@@ -15,6 +15,7 @@ const actionLogRoutes = require('./routes/actionLogs')
 const settingsRoutes = require('./routes/settings')
 const setupRoutes = require('./routes/setup')
 const schoolRoutes = require('./routes/schools')
+const quickAlertRoutes = require('./routes/quickAlerts')
 const { runArchiveJob } = require('./archiver')
 //app setup
 const app = express()
@@ -67,6 +68,7 @@ app.use('/api/action-logs', actionLogRoutes)
 app.use('/api/settings', settingsRoutes)
 app.use('/api/setup', setupRoutes)
 app.use('/api/schools', schoolRoutes)
+app.use('/api/quick-alerts', quickAlertRoutes)
 //simple route to check whether the backend is running
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
