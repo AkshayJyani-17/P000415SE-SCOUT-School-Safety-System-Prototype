@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { incidentAPI, apiCall, quickAlertsAPI, setupAPI } from '../api/client'
+import AlertConfirmation from './AlertConfirmation'
 
 const FALLBACK_EMERGENCY_TYPES = [
   { value: 'Natural Disaster', icon: '🌊', desc: 'Earthquake, flood, severe weather' },
@@ -18,7 +19,6 @@ const FALLBACK_ACTION2_TYPES = [
 
 export default function QuickActions() {
   const { isStaff, currentUser } = useAuth()
-  const [feedback, setFeedback] = useState(null)
   const [showConfirm, setShowConfirm] = useState(false)
   const [showCategory, setShowCategory] = useState(false)
   const [showAction2Category, setShowAction2Category] = useState(false)
@@ -118,9 +118,7 @@ export default function QuickActions() {
         window.dispatchEvent(new Event('emergencyTriggered'))
       }
 
-      setShowResult(data)
-      setFeedback({ type: quickAlert.label })
-      setTimeout(() => setFeedback(null), 3000)
+      setShowResult({ incident, delivery: data })
     } catch (err) {
       setCodeError(err.message || 'Could not send that quick alert. Please try again.')
     } finally {
@@ -195,23 +193,17 @@ export default function QuickActions() {
         }),
       })
 
-      if (data.success) {
-        if (incidentId) {
-          localStorage.setItem('activeEmergency', JSON.stringify({
-            incidentId,
-            emergencyType: selectedType.value,
-            triggeredAt: new Date().toISOString(),
-          }))
-          window.dispatchEvent(new Event('emergencyTriggered'))
-        }
-
-        setShowKeypad(false)
-        setShowResult(data)
-        setFeedback({ type: selectedType.value })
-        setTimeout(() => setFeedback(null), 3000)
-      } else {
-        setCodeError(data.error || 'Failed to send alert. Please try again.')
+      if (incidentId) {
+        localStorage.setItem('activeEmergency', JSON.stringify({
+          incidentId,
+          emergencyType: selectedType.value,
+          triggeredAt: new Date().toISOString(),
+        }))
+        window.dispatchEvent(new Event('emergencyTriggered'))
       }
+
+      setShowKeypad(false)
+      setShowResult({ incident, delivery: data })
     } catch (error) {
       setCodeError(error.message || 'Could not connect to server. Make sure the backend is running.')
     }
@@ -263,9 +255,7 @@ export default function QuickActions() {
         window.dispatchEvent(new Event('emergencyTriggered'))
       }
 
-      setShowResult(data)
-      setFeedback({ type: selectedAction2Type.label })
-      setTimeout(() => setFeedback(null), 3000)
+      setShowResult({ incident, delivery: data })
     } catch (err) {
       console.error('Failed to create incident or send notifications for action 2:', err)
       setCodeError(err.message || 'Could not create the incident or send notifications. Please try again.')
@@ -341,16 +331,6 @@ export default function QuickActions() {
 
       {codeError && !showKeypad && (
         <p className="text-xs text-red-600">{codeError}</p>
-      )}
-
-      {feedback && (
-        <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 flex items-center gap-2">
-          <span className="text-green-600">✅</span>
-          <div>
-            <p className="text-sm font-semibold text-green-900">{feedback.type} alert sent</p>
-            <p className="text-xs text-green-700">Help is on the way. Relevant staff have been notified.</p>
-          </div>
-        </div>
       )}
 
 
@@ -528,21 +508,12 @@ export default function QuickActions() {
         </div>
       )}
 
-      {showResult && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setShowResult(null)} />
-          <div className="relative bg-white border border-gray-200 rounded-xl p-6 max-w-sm w-full shadow-xl text-center">
-            <div className="text-4xl mb-3">✅</div>
-            <h4 className="font-bold text-gray-900 text-lg mb-1">Alert sent</h4>
-            <p className="text-sm text-gray-500 mb-6">Help is on the way. Relevant staff have been notified and will respond shortly.</p>
-            <button
-              onClick={() => setShowResult(null)}
-              className="w-full py-2.5 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 transition-colors font-medium"
-            >
-              Close
-            </button>
-          </div>
-        </div>
+      {showResult?.incident && (
+        <AlertConfirmation
+          incident={showResult.incident}
+          delivery={showResult.delivery}
+          onDismiss={() => setShowResult(null)}
+        />
       )}
 
 
