@@ -7,6 +7,8 @@ import ShortcutCard from '../components/ShortcutCard'
 import QuickViewStrip from '../components/QuickViewStrip'
 import SchoolAdminStatus from '../components/SchoolAdminStatus'
 import { incidentAPI, settingsAPI } from '../api/client'
+import DeleteIncidentButton from '../components/DeleteIncidentButton'
+import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
 import { useAuth } from '../context/AuthContext'
 import { useSchools } from '../context/SchoolsContext'
 
@@ -122,6 +124,7 @@ export default function Dashboard() {
   const {
     currentUser,
     userRole,
+    isAdmin,
     isCompanyAdmin,
     isSchoolAdmin,
     isStaff,
@@ -131,6 +134,8 @@ export default function Dashboard() {
 
   const [incidents, setIncidents] = useState([])
   const [sortOrder, setSortOrder] = useState('newest')
+  // The incident awaiting delete confirmation, or null when the dialog is shut.
+  const [incidentToDelete, setIncidentToDelete] = useState(null)
 
   const [selectedSchool, setSelectedSchool] = useState(
     () => sessionStorage.getItem('dashboardSelectedSchool') || 'all'
@@ -450,6 +455,12 @@ export default function Dashboard() {
                       ⏰ Overdue
                     </span>
                   )}
+
+                  <DeleteIncidentButton
+                    incident={incident}
+                    isAdmin={isAdmin}
+                    onRequestDelete={setIncidentToDelete}
+                  />
                 </div>
               )
             })}
@@ -544,6 +555,12 @@ export default function Dashboard() {
                   {incident.status}
                 </span>
 
+                <DeleteIncidentButton
+                  incident={incident}
+                  isAdmin={isAdmin}
+                  onRequestDelete={setIncidentToDelete}
+                />
+
                 <span className="text-gray-400">
                   &gt;
                 </span>
@@ -552,6 +569,17 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      )}
+
+      {incidentToDelete && (
+        <DeleteIncidentDialog
+          incident={incidentToDelete}
+          onCancel={() => setIncidentToDelete(null)}
+          onDeleted={deletedId => {
+            setIncidents(current => current.filter(record => record.id !== deletedId))
+            setIncidentToDelete(null)
+          }}
+        />
       )}
     </div>
   )

@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Trash2 } from 'lucide-react'
 import { archiveAPI, getIncidents, settingsAPI } from '../api/client'
+import DeleteIncidentButton from '../components/DeleteIncidentButton'
 import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
-import { canDeleteIncident } from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 import { useSchools } from '../context/SchoolsContext'
 
@@ -509,26 +508,11 @@ export default function Incidents() {
                       🚩 Review
                     </span>
                   )}
-                  {/* Admins only, staff must not be able to erase a report.
-                      Only shown where deletion is actually allowed: the default
-                      "Active Incidents" view holds nothing deletable, so an icon
-                      on every row would be noise. The detail page spells out the
-                      rule for anyone looking for the action. */}
-                  {isAdmin && canDeleteIncident(incident) && (
-                    <button
-                      type="button"
-                      aria-label={`Delete ${incident.incidentNumber || incident.title}`}
-                      title="Delete this incident"
-                      onClick={event => {
-                        // The row itself opens the incident.
-                        event.stopPropagation()
-                        setIncidentToDelete(incident)
-                      }}
-                      className="p-1.5 rounded-lg text-gray-400 transition-colors hover:text-red-600 hover:bg-red-50"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
+                  <DeleteIncidentButton
+                    incident={incident}
+                    isAdmin={isAdmin}
+                    onRequestDelete={setIncidentToDelete}
+                  />
                   <span className="text-gray-400">&gt;</span>
                 </div>
               )
