@@ -136,6 +136,23 @@ describe('Deleting from the dashboard', () => {
     expect(deleteButton('INC-0009')).toBeInTheDocument()
   })
 
+  test('a test drill is badged TEST on the dashboard alongside its delete icon', async () => {
+    await renderDashboard()
+
+    // Without the badge a drill is indistinguishable from a real alert here,
+    // which makes the delete icon look like it appears at random.
+    expect(screen.getByText('TEST')).toBeInTheDocument()
+    expect(deleteButton('INC-0009')).toBeInTheDocument()
+  })
+
+  test('a resolved test alert is deletable from the recent list', async () => {
+    mockIncidents = [{ ...RESOLVED, isTest: true }]
+    await renderDashboard()
+
+    expect(screen.getByText('TEST')).toBeInTheDocument()
+    expect(deleteButton('INC-0007')).toBeInTheDocument()
+  })
+
   test('staff see no delete icons on the dashboard', async () => {
     mockAuth = STAFF
     mockIncidents = [RESOLVED]
