@@ -50,7 +50,7 @@ vi.mock('react-router-dom', async () => {
 })
 
 vi.mock('../context/AuthContext', () => ({
-  useAuth: () => ({ currentUser: { email: 'admin@school.edu' }, authLoading: false, ...mockAuth }),
+  useAuth: () => ({ authLoading: false, ...mockAuth }),
 }))
 
 vi.mock('../context/SchoolsContext', () => ({
@@ -75,8 +75,29 @@ vi.mock('../api/client', () => ({
   incidentAPI: { remove: (...args) => mockRemove(...args) },
 }))
 
-const COMPANY_ADMIN = { userRole: 'Company Admin', isCompanyAdmin: true, isSchoolAdmin: false, isAdmin: true }
-const STAFF = { userRole: 'Staff', isCompanyAdmin: false, isSchoolAdmin: false, isAdmin: false }
+const COMPANY_ADMIN = {
+  currentUser: { uid: 'company-uid', email: 'admin@scout.edu' },
+  userRole: 'Company Admin',
+  isCompanyAdmin: true,
+  isSchoolAdmin: false,
+  isAdmin: true,
+}
+
+const SCHOOL_ADMIN = {
+  currentUser: { uid: 'school-admin-uid', email: 'principal@school.edu' },
+  userRole: 'School Admin',
+  isCompanyAdmin: false,
+  isSchoolAdmin: true,
+  isAdmin: true,
+}
+
+const STAFF = {
+  currentUser: { uid: 'staff-uid', email: 'staff@school.edu' },
+  userRole: 'Staff',
+  isCompanyAdmin: false,
+  isSchoolAdmin: false,
+  isAdmin: false,
+}
 
 beforeEach(() => {
   mockAuth = COMPANY_ADMIN
@@ -129,6 +150,28 @@ describe('Deleting from the incident list', () => {
     await screen.findByText(/fire alarm sounding/i)
 
     expect(deleteButton('INC-0008')).toBeInTheDocument()
+  })
+
+  test('a School Admin only gets the icon on drills they raised', async () => {
+    mockAuth = SCHOOL_ADMIN
+    mockIncidents = [
+      { ...LIVE, isTest: true, triggeredById: 'school-admin-uid' },
+      { ...LIVE, id: 'other-1', incidentNumber: 'INC-0010', title: 'Someone elses drill', isTest: true, triggeredById: 'another-uid' },
+      RESOLVED,
+    ]
+    render(
+      <MemoryRouter>
+        <Incidents />
+      </MemoryRouter>
+    )
+    await screen.findByText(/fire alarm sounding/i)
+    fireEvent.change(screen.getByDisplayValue('Active Incidents'), { target: { value: 'all' } })
+    await screen.findByText(/duplicate fire report/i)
+
+    expect(deleteButton('INC-0008')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /delete inc-0010/i })).not.toBeInTheDocument()
+    // Resolved, at their school, but not their drill.
+    expect(screen.queryByRole('button', { name: /delete inc-0007/i })).not.toBeInTheDocument()
   })
 
   test('a test alert is deletable from the list even while triggered', async () => {

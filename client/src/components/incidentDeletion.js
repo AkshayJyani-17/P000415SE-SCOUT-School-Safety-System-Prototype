@@ -39,7 +39,7 @@ function elapsedMinutes(incident) {
 //
 // The backend enforces the same rule; this only keeps the UI honest, so the
 // threshold must be the effective per-school one the pages already load.
-export function canDeleteIncident(incident, overdueThresholdMinutes = DEFAULT_OVERDUE_THRESHOLD_MINUTES) {
+export function isIncidentDeletable(incident, overdueThresholdMinutes = DEFAULT_OVERDUE_THRESHOLD_MINUTES) {
   if (!incident) return false
   if (incident.isTest) return true
   if (incident.status === 'resolved') return true
@@ -48,4 +48,44 @@ export function canDeleteIncident(incident, overdueThresholdMinutes = DEFAULT_OV
   if (Array.isArray(incident.acknowledgedBy) && incident.acknowledgedBy.length > 0) return false
 
   return elapsedMinutes(incident) > overdueThresholdMinutes
+}
+
+// Narrows the auth context down to just what the delete rule needs.
+export function deleteViewerFrom(auth = {}) {
+  return {
+    isCompanyAdmin: Boolean(auth.isCompanyAdmin),
+    isSchoolAdmin: Boolean(auth.isSchoolAdmin),
+    uid: auth.currentUser?.uid || null,
+    email: auth.currentUser?.email || null,
+  }
+}
+
+function isOwnIncident(incident, viewer) {
+  if (viewer.uid && incident.triggeredById) {
+    return incident.triggeredById === viewer.uid
+  }
+
+  if (viewer.email && incident.triggeredByEmail) {
+    return String(incident.triggeredByEmail).toLowerCase() === String(viewer.email).toLowerCase()
+  }
+
+  return false
+}
+
+// Who may remove a record at all, before its state is considered:
+//   Company Admin: anything, at any school.
+//   School Admin: only test alerts they raised themselves, so a school
+//     cannot quietly erase genuine incident records of its own. School
+//     Admins run the drills, so they can still clear up after themselves.
+// The backend enforces the same rule; this only keeps the UI honest.
+export function canRoleDeleteIncident(incident, viewer = {}) {
+  if (!incident) return false
+  if (viewer.isCompanyAdmin) return true
+  if (!viewer.isSchoolAdmin) return false
+
+  return Boolean(incident.isTest) && isOwnIncident(incident, viewer)
+}
+
+export function canDeleteIncident(incident, viewer = {}, overdueThresholdMinutes = DEFAULT_OVERDUE_THRESHOLD_MINUTES) {
+  return canRoleDeleteIncident(incident, viewer) && isIncidentDeletable(incident, overdueThresholdMinutes)
 }

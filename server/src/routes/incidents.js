@@ -165,6 +165,34 @@ const MAX_DELETION_REASON_LENGTH = 500
 const DELETE_INELIGIBLE_MESSAGE =
   'Only test alerts, resolved incidents, and overdue incidents that nobody has acknowledged can be deleted.'
 
+const DELETE_NOT_PERMITTED_MESSAGE =
+  'School Admins can only delete test alerts they raised themselves.'
+
+function isOwnIncident(profile, incident) {
+  if (profile.uid && incident.triggeredById) {
+    return incident.triggeredById === profile.uid
+  }
+
+  if (profile.email && incident.triggeredByEmail) {
+    return String(incident.triggeredByEmail).toLowerCase() === String(profile.email).toLowerCase()
+  }
+
+  return false
+}
+
+// Who may remove a record at all, before considering its state:
+//   Company Admin: anything, at any school.
+//   School Admin: only test alerts they raised themselves, so a school
+//     cannot quietly erase genuine incident records of its own. School
+//     Admins are the ones who run drills, so this still lets them clear
+//     up after themselves.
+function canRoleDeleteIncident(profile, incident) {
+  if (isCompanyAdmin(profile.role)) return true
+  if (!isSchoolAdmin(profile.role)) return false
+
+  return incident.isTest === true && isOwnIncident(profile, incident)
+}
+
 function incidentAgeMinutes(incident) {
   const raw = incident.createdAt
   if (!raw) return 0
@@ -609,15 +637,15 @@ router.post('/:id/review-comment', verifyToken, async (req, res, next) => {
 })
 
 // DELETE /api/incidents/:id
-// Company Admins may delete any incident, School Admins only their own
-// school's. Staff are excluded on purpose: a reporter must not be able to
-// erase their own report.
+// Company Admins may delete any incident. School Admins may only delete test
+// alerts they raised themselves, so a school cannot quietly erase genuine
+// records of its own. Staff cannot delete at all: a reporter must not be able
+// to erase their own report.
 //
 // This is a soft delete. The record is copied into deletedIncidents with who
-// deleted it, when and why, then removed from incidents. This is the same
-// move the archiver performs for aged out incidents. Deleted records are not
-// readable
-// through the app.
+// deleted it, when and why, then removed from incidents. This is the same move
+// the archiver performs for aged out incidents. Deleted records are not
+// readable through the app.
 router.delete('/:id', verifyToken, async (req, res, next) => {
   try {
     const profile = await getUserProfile(req.user)
@@ -639,6 +667,10 @@ router.delete('/:id', verifyToken, async (req, res, next) => {
     // they are everywhere else in this file.
     if (!canReadIncident(profile, incident)) {
       return res.status(403).json({ error: 'You do not have permission to delete this incident.' })
+    }
+
+    if (!canRoleDeleteIncident(profile, incident)) {
+      return res.status(403).json({ error: DELETE_NOT_PERMITTED_MESSAGE })
     }
 
     // Resolved per-school so the gate matches the "Overdue" badge the user sees.

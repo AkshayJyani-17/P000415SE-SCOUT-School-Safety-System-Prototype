@@ -4,16 +4,19 @@ import { canDeleteIncident } from './incidentDeletion'
 /**
  * Row-level delete icon for an incident in a list.
  *
- * Renders nothing unless the viewer is an admin and the incident is actually
- * deletable, which keeps the common "active incidents" views free of a column
- * of disabled icons. The incident detail page explains the rule for anyone
+ * Renders nothing unless this viewer may delete this particular incident,
+ * which keeps the common "active incidents" views free of a column of
+ * disabled icons. The incident detail page explains the rule for anyone
  * looking for the action.
+ *
+ * The viewer prop carries the role flags plus uid and email, because a
+ * School Admin may only delete test alerts they raised themselves.
  *
  * List rows open the incident when clicked, so the press is stopped from
  * bubbling up to the row.
  */
-export default function DeleteIncidentButton({ incident, isAdmin, overdueThresholdMinutes, onRequestDelete }) {
-  if (!isAdmin || !canDeleteIncident(incident, overdueThresholdMinutes)) return null
+export default function DeleteIncidentButton({ incident, viewer, overdueThresholdMinutes, onRequestDelete }) {
+  if (!canDeleteIncident(incident, viewer, overdueThresholdMinutes)) return null
 
   return (
     <button

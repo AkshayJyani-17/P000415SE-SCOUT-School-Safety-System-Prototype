@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { archiveAPI, getIncidents, settingsAPI } from '../api/client'
 import DeleteIncidentButton from '../components/DeleteIncidentButton'
 import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
+import { deleteViewerFrom } from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 import { useSchools } from '../context/SchoolsContext'
 
@@ -136,7 +137,9 @@ function formatDuration(minutes) {
 
 export default function Incidents() {
   const navigate = useNavigate()
-  const { authLoading, isAdmin, isCompanyAdmin, isSchoolAdmin, userRole } = useAuth()
+  const auth = useAuth()
+  const { authLoading, isCompanyAdmin, isSchoolAdmin, userRole } = auth
+  const deleteViewer = deleteViewerFrom(auth)
   const { schools } = useSchools()
   const [incidents, setIncidents] = useState([])
   // The incident awaiting delete confirmation, or null when the dialog is shut.
@@ -510,7 +513,7 @@ export default function Incidents() {
                   )}
                   <DeleteIncidentButton
                     incident={incident}
-                    isAdmin={isAdmin}
+                    viewer={deleteViewer}
                     overdueThresholdMinutes={overdueThresholdMinutes}
                     onRequestDelete={setIncidentToDelete}
                   />

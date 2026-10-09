@@ -9,6 +9,7 @@ import SchoolAdminStatus from '../components/SchoolAdminStatus'
 import { incidentAPI, settingsAPI } from '../api/client'
 import DeleteIncidentButton from '../components/DeleteIncidentButton'
 import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
+import { deleteViewerFrom } from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 import { useSchools } from '../context/SchoolsContext'
 
@@ -121,14 +122,17 @@ function formatDuration(minutes) {
 export default function Dashboard() {
   const navigate = useNavigate()
 
+  const auth = useAuth()
+
   const {
     currentUser,
     userRole,
-    isAdmin,
     isCompanyAdmin,
     isSchoolAdmin,
     isStaff,
-  } = useAuth()
+  } = auth
+
+  const deleteViewer = deleteViewerFrom(auth)
 
   const { schools } = useSchools()
 
@@ -464,7 +468,7 @@ export default function Dashboard() {
 
                   <DeleteIncidentButton
                     incident={incident}
-                    isAdmin={isAdmin}
+                    viewer={deleteViewer}
                     overdueThresholdMinutes={overdueThresholdMinutes}
                     onRequestDelete={setIncidentToDelete}
                   />
@@ -570,7 +574,7 @@ export default function Dashboard() {
 
                 <DeleteIncidentButton
                   incident={incident}
-                  isAdmin={isAdmin}
+                  viewer={deleteViewer}
                   overdueThresholdMinutes={overdueThresholdMinutes}
                   onRequestDelete={setIncidentToDelete}
                 />

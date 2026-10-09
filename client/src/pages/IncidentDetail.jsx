@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getIncidentById, incidentAPI, settingsAPI } from '../api/client'
 import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
-import { canDeleteIncident, DELETE_INELIGIBLE_MESSAGE } from '../components/incidentDeletion'
+import {
+  canRoleDeleteIncident,
+  deleteViewerFrom,
+  isIncidentDeletable,
+  DELETE_INELIGIBLE_MESSAGE,
+} from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 
 const progressSteps = [
@@ -114,7 +119,9 @@ function formatDuration(minutes) {
 export default function IncidentDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { currentUser, userRole, isAdmin, isSchoolAdmin, authLoading } = useAuth()
+  const auth = useAuth()
+  const { currentUser, userRole, isAdmin, isSchoolAdmin, authLoading } = auth
+  const deleteViewer = deleteViewerFrom(auth)
   const [incident, setIncident] = useState(null)
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(true)
@@ -742,10 +749,10 @@ export default function IncidentDetail() {
 
       {/* Delete incident, admins only. Staff are excluded so a reporter
           cannot erase their own report. */}
-      {isAdmin && (
+      {canRoleDeleteIncident({ ...found, status }, deleteViewer) && (
         <div className="mt-6 border-t border-gray-200 pt-5">
           <h2 className="text-sm font-semibold text-gray-700 mb-1">Delete this incident</h2>
-          {canDeleteIncident({ ...found, status }, overdueThresholdMinutes) ? (
+          {isIncidentDeletable({ ...found, status }, overdueThresholdMinutes) ? (
             <>
               <p className="text-xs text-gray-500 mb-3">
                 Removes the incident from the incident log, dashboard counts and analytics. A copy is

@@ -65,7 +65,7 @@ vi.mock('react-router-dom', async () => {
 })
 
 vi.mock('../context/AuthContext', () => ({
-  useAuth: () => ({ currentUser: { email: 'admin@school.edu' }, authLoading: false, ...mockAuth }),
+  useAuth: () => ({ authLoading: false, ...mockAuth }),
 }))
 
 vi.mock('../context/SchoolsContext', () => ({
@@ -84,6 +84,7 @@ vi.mock('../api/client', () => ({
 }))
 
 const COMPANY_ADMIN = {
+  currentUser: { uid: 'company-uid', email: 'admin@scout.edu' },
   userRole: 'Company Admin',
   isCompanyAdmin: true,
   isSchoolAdmin: false,
@@ -91,7 +92,17 @@ const COMPANY_ADMIN = {
   isAdmin: true,
 }
 
+const SCHOOL_ADMIN = {
+  currentUser: { uid: 'school-admin-uid', email: 'principal@school.edu' },
+  userRole: 'School Admin',
+  isCompanyAdmin: false,
+  isSchoolAdmin: true,
+  isStaff: false,
+  isAdmin: true,
+}
+
 const STAFF = {
+  currentUser: { uid: 'staff-uid', email: 'staff@school.edu' },
   userRole: 'Staff',
   isCompanyAdmin: false,
   isSchoolAdmin: false,
@@ -161,6 +172,25 @@ describe('Deleting from the dashboard', () => {
     await screen.findByText(/medical response underway/i)
 
     expect(deleteButton('INC-0008')).toBeInTheDocument()
+  })
+
+  test('a School Admin only gets the icon on drills they raised', async () => {
+    mockAuth = SCHOOL_ADMIN
+    mockIncidents = [
+      { ...TEST_DRILL, triggeredById: 'school-admin-uid' },
+      { ...TEST_DRILL, id: 'other-drill', incidentNumber: 'INC-0010', title: 'Someone elses drill', triggeredById: 'another-uid' },
+      RESOLVED,
+    ]
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    )
+    await screen.findByText(/lockdown drill/i)
+
+    expect(deleteButton('INC-0009')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /delete inc-0010/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /delete inc-0007/i })).not.toBeInTheDocument()
   })
 
   test('a resolved test alert is deletable from the recent list', async () => {

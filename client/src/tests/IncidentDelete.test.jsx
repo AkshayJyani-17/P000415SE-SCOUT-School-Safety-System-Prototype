@@ -36,7 +36,7 @@ vi.mock('react-router-dom', async () => {
 })
 
 vi.mock('../context/AuthContext', () => ({
-  useAuth: () => ({ currentUser: { email: 'admin@school.edu' }, authLoading: false, ...mockAuth }),
+  useAuth: () => ({ authLoading: false, ...mockAuth }),
 }))
 
 vi.mock('../api/client', () => ({
@@ -50,8 +50,39 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-const COMPANY_ADMIN = { userRole: 'Company Admin', isCompanyAdmin: true, isSchoolAdmin: false, isAdmin: true }
-const STAFF = { userRole: 'Staff', isCompanyAdmin: false, isSchoolAdmin: false, isAdmin: false }
+const COMPANY_ADMIN = {
+  currentUser: { uid: 'company-uid', email: 'admin@scout.edu' },
+  userRole: 'Company Admin',
+  isCompanyAdmin: true,
+  isSchoolAdmin: false,
+  isAdmin: true,
+}
+
+const SCHOOL_ADMIN = {
+  currentUser: { uid: 'school-admin-uid', email: 'principal@school.edu' },
+  userRole: 'School Admin',
+  isCompanyAdmin: false,
+  isSchoolAdmin: true,
+  isAdmin: true,
+}
+
+const STAFF = {
+  currentUser: { uid: 'staff-uid', email: 'staff@school.edu' },
+  userRole: 'Staff',
+  isCompanyAdmin: false,
+  isSchoolAdmin: false,
+  isAdmin: false,
+}
+
+// A drill raised by the School Admin, the only thing that role may delete.
+const OWN_DRILL = {
+  ...RESOLVED_INCIDENT,
+  status: 'triggered',
+  isTest: true,
+  acknowledgedBy: [],
+  triggeredById: 'school-admin-uid',
+  triggeredByEmail: 'principal@school.edu',
+}
 
 beforeEach(() => {
   mockAuth = COMPANY_ADMIN
@@ -130,6 +161,38 @@ describe('Incident deletion: availability', () => {
 
     expect(screen.queryByText(/delete this incident/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^delete incident$/i })).not.toBeInTheDocument()
+  })
+
+  test('a School Admin can delete a test alert they raised', async () => {
+    mockAuth = SCHOOL_ADMIN
+    mockIncident = OWN_DRILL
+    await renderPage()
+
+    expect(screen.getByRole('button', { name: /^delete incident$/i })).toBeInTheDocument()
+  })
+
+  test('a School Admin sees no delete section on a real incident', async () => {
+    mockAuth = SCHOOL_ADMIN
+    await renderPage()
+
+    // Resolved and at their school, but not a drill they raised, so there is
+    // no path to deleting it and the section is hidden rather than refusing.
+    expect(screen.queryByText(/delete this incident/i)).not.toBeInTheDocument()
+  })
+
+  test('a School Admin sees no delete section on a drill someone else raised', async () => {
+    mockAuth = SCHOOL_ADMIN
+    mockIncident = { ...OWN_DRILL, triggeredById: 'another-admin-uid', triggeredByEmail: 'other@school.edu' }
+    await renderPage()
+
+    expect(screen.queryByText(/delete this incident/i)).not.toBeInTheDocument()
+  })
+
+  test('a Company Admin can delete a drill raised by a School Admin', async () => {
+    mockIncident = OWN_DRILL
+    await renderPage()
+
+    expect(screen.getByRole('button', { name: /^delete incident$/i })).toBeInTheDocument()
   })
 })
 

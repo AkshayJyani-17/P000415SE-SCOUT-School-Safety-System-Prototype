@@ -772,6 +772,20 @@ function deletableDb(overrides = {}) {
   })
 }
 
+// A drill raised by the School Admin, the only thing that role may delete.
+function ownDrillRecord() {
+  return {
+    title: 'TEST: Fire alert',
+    type: 'fire',
+    status: 'triggered',
+    isTest: true,
+    schoolId: 'school_alpha',
+    triggeredById: 'school-admin-uid',
+    triggeredByEmail: 'principal@school.edu',
+    createdAt: '2026-04-29T10:00:00.000Z',
+  }
+}
+
 function deleteRequest(baseUrl, id, token, body = { reasonCode: 'duplicate', reason: 'Logged twice' }) {
   return fetch(`${baseUrl}/api/incidents/${id}`, {
     method: 'DELETE',
@@ -795,33 +809,96 @@ test('DELETE /api/incidents/:id lets a Company Admin delete a resolved incident'
 })
 
 test('DELETE /api/incidents/:id stores who deleted it, when and why', async () => {
-  fakeDb = deletableDb()
+  fakeDb = deletableDb({ ownDrill: ownDrillRecord() })
 
   await withServer(createApp(), async baseUrl => {
-    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'school-token', {
-      reasonCode: 'logged_in_error',
-      reason: 'Reported against the wrong building',
+    const response = await deleteRequest(baseUrl, 'ownDrill', 'school-token', {
+      reasonCode: 'test_or_drill',
+      reason: 'Finished the drill',
     })
     assert.equal(response.status, 200)
 
-    const record = fakeDb.stores.deletedIncidents.get('resolvedAlpha')
-    assert.equal(record.deletionReasonCode, 'logged_in_error')
-    assert.equal(record.deletionReason, 'Reported against the wrong building')
+    const record = fakeDb.stores.deletedIncidents.get('ownDrill')
+    assert.equal(record.deletionReasonCode, 'test_or_drill')
+    assert.equal(record.deletionReason, 'Finished the drill')
     assert.equal(record.deletedBy.email, 'principal@school.edu')
     assert.equal(record.deletedBy.role, 'schoolAdmin')
     assert.ok(record.deletedAt, 'deletedAt should be recorded')
     // The original incident data is retained for audit.
-    assert.equal(record.title, 'Duplicate fire report')
+    assert.equal(record.title, 'TEST: Fire alert')
   })
 })
 
-test('DELETE /api/incidents/:id lets a School Admin delete an incident at their own school', async () => {
+test('DELETE /api/incidents/:id lets a School Admin delete a test alert they raised', async () => {
+  fakeDb = deletableDb({ ownDrill: ownDrillRecord() })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'ownDrill', 'school-token', {
+      reasonCode: 'test_or_drill',
+      reason: '',
+    })
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('ownDrill'), false)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 when a School Admin deletes a drill someone else raised', async () => {
+  fakeDb = deletableDb({
+    othersDrill: { ...ownDrillRecord(), triggeredById: 'another-admin-uid', triggeredByEmail: 'other@school.edu' },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'othersDrill', 'school-token', {
+      reasonCode: 'test_or_drill',
+      reason: '',
+    })
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('othersDrill'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 when a School Admin deletes a real incident at their own school', async () => {
   fakeDb = deletableDb()
 
   await withServer(createApp(), async baseUrl => {
+    // Resolved and at their school, so the old rule allowed this. A school
+    // must not be able to erase its own genuine records.
     const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'school-token')
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+    assert.equal(fakeDb.stores.deletedIncidents.size, 0)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 when a School Admin deletes their own real incident', async () => {
+  fakeDb = deletableDb({
+    ownRealIncident: {
+      title: 'Injury on the oval',
+      status: 'resolved',
+      schoolId: 'school_alpha',
+      triggeredById: 'school-admin-uid',
+      createdAt: '2026-04-29T10:00:00.000Z',
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    // Raising it does not grant the right to remove it; only drills qualify.
+    const response = await deleteRequest(baseUrl, 'ownRealIncident', 'school-token')
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('ownRealIncident'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id lets a Company Admin delete a drill raised by a School Admin', async () => {
+  fakeDb = deletableDb({ ownDrill: ownDrillRecord() })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'ownDrill', 'company-token', {
+      reasonCode: 'test_or_drill',
+      reason: '',
+    })
     assert.equal(response.status, 200)
-    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), false)
+    assert.equal(fakeDb.stores.incidents.has('ownDrill'), false)
   })
 })
 
@@ -866,7 +943,7 @@ test('DELETE /api/incidents/:id deletes a test alert whatever its status', async
   })
 
   await withServer(createApp(), async baseUrl => {
-    const response = await deleteRequest(baseUrl, 'testDrill', 'school-token', {
+    const response = await deleteRequest(baseUrl, 'testDrill', 'company-token', {
       reasonCode: 'test_or_drill',
       reason: '',
     })
