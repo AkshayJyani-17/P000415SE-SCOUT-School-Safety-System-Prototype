@@ -117,10 +117,17 @@ describe('Incident deletion: confirmation step', () => {
     expect(dialog.getByText(/cannot be undone/i)).toBeInTheDocument()
   })
 
-  test('the dialog warns that people were notified and acknowledged', async () => {
+  test('the dialog warns that staff have already acknowledged the alert', async () => {
     const dialog = await openDialog()
 
-    expect(dialog.getByText(/2 people were notified about this alert and 2 acknowledged it/i)).toBeInTheDocument()
+    expect(dialog.getByText(/2 people have already acknowledged this alert/i)).toBeInTheDocument()
+  })
+
+  test('the dialog falls back to the notified count when nobody acknowledged', async () => {
+    mockIncident = { ...RESOLVED_INCIDENT, acknowledgedBy: [] }
+    const dialog = await openDialog()
+
+    expect(dialog.getByText(/2 people were notified about this alert/i)).toBeInTheDocument()
   })
 
   test('deleting is blocked until a reason is chosen', async () => {

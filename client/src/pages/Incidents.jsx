@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Trash2 } from 'lucide-react'
 import { archiveAPI, getIncidents, settingsAPI } from '../api/client'
+import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
+import { canDeleteIncident } from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 import { useSchools } from '../context/SchoolsContext'
 
@@ -134,9 +137,11 @@ function formatDuration(minutes) {
 
 export default function Incidents() {
   const navigate = useNavigate()
-  const { authLoading, isCompanyAdmin, isSchoolAdmin, userRole } = useAuth()
+  const { authLoading, isAdmin, isCompanyAdmin, isSchoolAdmin, userRole } = useAuth()
   const { schools } = useSchools()
   const [incidents, setIncidents] = useState([])
+  // The incident awaiting delete confirmation, or null when the dialog is shut.
+  const [incidentToDelete, setIncidentToDelete] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [filterStatus, setFilterStatus] = useState('active')
@@ -504,12 +509,43 @@ export default function Incidents() {
                       🚩 Review
                     </span>
                   )}
+                  {/* Admins only, staff must not be able to erase a report.
+                      Only shown where deletion is actually allowed: the default
+                      "Active Incidents" view holds nothing deletable, so an icon
+                      on every row would be noise. The detail page spells out the
+                      rule for anyone looking for the action. */}
+                  {isAdmin && canDeleteIncident(incident) && (
+                    <button
+                      type="button"
+                      aria-label={`Delete ${incident.incidentNumber || incident.title}`}
+                      title="Delete this incident"
+                      onClick={event => {
+                        // The row itself opens the incident.
+                        event.stopPropagation()
+                        setIncidentToDelete(incident)
+                      }}
+                      className="p-1.5 rounded-lg text-gray-400 transition-colors hover:text-red-600 hover:bg-red-50"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                   <span className="text-gray-400">&gt;</span>
                 </div>
               )
             })
           )}
         </div>
+      )}
+
+      {incidentToDelete && (
+        <DeleteIncidentDialog
+          incident={incidentToDelete}
+          onCancel={() => setIncidentToDelete(null)}
+          onDeleted={deletedId => {
+            setIncidents(current => current.filter(record => record.id !== deletedId))
+            setIncidentToDelete(null)
+          }}
+        />
       )}
     </div>
   )

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getIncidentById, incidentAPI, settingsAPI } from '../api/client'
+import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
+import { canDeleteIncident, DELETE_INELIGIBLE_MESSAGE } from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 
 const progressSteps = [
@@ -86,16 +88,6 @@ const nextStatus = {
   'in-progress': 'resolved',
 }
 
-// Reason codes mirror DELETION_REASON_CODES in server/src/routes/incidents.js.
-// A fixed list keeps the audit trail analysable instead of a free-text dump.
-const DELETION_REASONS = [
-  { code: 'duplicate', label: 'Duplicate of another incident' },
-  { code: 'test_or_drill', label: 'Test alert or drill' },
-  { code: 'logged_in_error', label: 'Logged in error' },
-  { code: 'wrong_school', label: 'Logged against the wrong school' },
-  { code: 'other', label: 'Other (please describe)' },
-]
-
 const nextLabel = {
   triggered: 'Acknowledge',
   acknowledged: 'Mark In Progress',
@@ -141,12 +133,8 @@ export default function IncidentDetail() {
   // Overdue threshold
   const [overdueThresholdMinutes, setOverdueThresholdMinutes] = useState(15)
 
-  // Delete (soft) state
+  // Delete (soft) state. The dialog owns the reason and request state.
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
-  const [deleteReasonCode, setDeleteReasonCode] = useState('')
-  const [deleteReasonDetail, setDeleteReasonDetail] = useState('')
-  const [deleting, setDeleting] = useState(false)
-  const [deleteError, setDeleteError] = useState('')
 
   // Review flag state
   const [showFlagForm, setShowFlagForm] = useState(false)
@@ -279,28 +267,6 @@ export default function IncidentDetail() {
     }
   }
 
-  const openDeleteDialog = () => {
-    setDeleteReasonCode('')
-    setDeleteReasonDetail('')
-    setDeleteError('')
-    setShowDeleteDialog(true)
-  }
-
-  const handleDelete = async () => {
-    setDeleting(true)
-    setDeleteError('')
-    try {
-      await incidentAPI.remove(incident.id, {
-        reasonCode: deleteReasonCode,
-        reason: deleteReasonDetail,
-      })
-      navigate('/incidents')
-    } catch (err) {
-      setDeleteError(err.message || 'Failed to delete this incident. Please try again.')
-      setDeleting(false)
-    }
-  }
-
   const found = incident
 
   if (authLoading || userRole === null || loading) {
@@ -330,15 +296,6 @@ export default function IncidentDetail() {
   }
 
   const currentStepIndex = statusStepIndex[status] ?? 0
-
-  // Only drills and incidents whose response has finished may be deleted, so a
-  // live emergency is never pulled out from under the people responding to it.
-  const canDelete = Boolean(found.isTest) || status === 'resolved'
-  const acknowledgedCount = Array.isArray(found.acknowledgedBy) ? found.acknowledgedBy.length : 0
-  const notifiedCount = Array.isArray(found.notifications) ? found.notifications.length : 0
-  const deleteConfirmable =
-    Boolean(deleteReasonCode) &&
-    (deleteReasonCode !== 'other' || deleteReasonDetail.trim().length > 0)
 
   // Compute whether this incident is overdue (triggered and past threshold)
   const overdueElapsedMinutes = (() => {
@@ -788,7 +745,7 @@ export default function IncidentDetail() {
       {isAdmin && (
         <div className="mt-6 border-t border-gray-200 pt-5">
           <h2 className="text-sm font-semibold text-gray-700 mb-1">Delete this incident</h2>
-          {canDelete ? (
+          {canDeleteIncident({ ...found, status }) ? (
             <>
               <p className="text-xs text-gray-500 mb-3">
                 Removes the incident from the incident log, dashboard counts and analytics. A copy is
@@ -796,106 +753,24 @@ export default function IncidentDetail() {
               </p>
               <button
                 type="button"
-                onClick={openDeleteDialog}
+                onClick={() => setShowDeleteDialog(true)}
                 className="px-4 py-2 border border-red-300 text-red-700 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors"
               >
                 Delete Incident
               </button>
             </>
           ) : (
-            <p className="text-xs text-gray-500">
-              Only test alerts and resolved incidents can be deleted. Resolve this incident first.
-            </p>
+            <p className="text-xs text-gray-500">{DELETE_INELIGIBLE_MESSAGE}</p>
           )}
         </div>
       )}
 
-      {/* Confirmation dialog, names the incident and states the consequence */}
       {showDeleteDialog && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="delete-incident-title"
-        >
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
-            <h2 id="delete-incident-title" className="text-lg font-semibold text-gray-900 mb-3">
-              Delete this incident?
-            </h2>
-
-            <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 mb-3">
-              <p className="text-sm font-medium text-gray-900">
-                {found.type} · {found.incidentNumber || found.id}
-              </p>
-              <p className="text-xs text-gray-500 mt-0.5">{found.schoolName || 'Unknown school'}</p>
-            </div>
-
-            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">
-              This action cannot be undone. The incident will be removed from the incident log,
-              dashboard counts and analytics.
-            </p>
-
-            {(notifiedCount > 0 || acknowledgedCount > 0) && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
-                {notifiedCount} {notifiedCount === 1 ? 'person was' : 'people were'} notified about this
-                alert and {acknowledgedCount} acknowledged it. Deleting removes that response record
-                from the log.
-              </p>
-            )}
-
-            <label htmlFor="delete-reason-code" className="block text-xs font-medium text-gray-600 mb-1">
-              Reason for deleting <span className="text-red-500">*</span>
-            </label>
-            <select
-              id="delete-reason-code"
-              value={deleteReasonCode}
-              onChange={event => setDeleteReasonCode(event.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-red-400"
-            >
-              <option value="">Select a reason</option>
-              {DELETION_REASONS.map(reason => (
-                <option key={reason.code} value={reason.code}>{reason.label}</option>
-              ))}
-            </select>
-
-            <label htmlFor="delete-reason-detail" className="block text-xs font-medium text-gray-600 mb-1">
-              Detail{' '}
-              {deleteReasonCode === 'other'
-                ? <span className="text-red-500">*</span>
-                : <span className="text-gray-400">(optional)</span>}
-            </label>
-            <textarea
-              id="delete-reason-detail"
-              rows={2}
-              maxLength={500}
-              value={deleteReasonDetail}
-              onChange={event => setDeleteReasonDetail(event.target.value)}
-              placeholder="Anything that should sit with the audit record"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-red-400"
-            />
-
-            {deleteError && <p className="text-sm text-red-600 mt-2">{deleteError}</p>}
-
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                type="button"
-                onClick={() => setShowDeleteDialog(false)}
-                disabled={deleting}
-                className="px-4 py-2 border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleDelete}
-                disabled={deleting || !deleteConfirmable}
-                className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors"
-              >
-                {deleting ? 'Deleting...' : 'Delete Incident'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <DeleteIncidentDialog
+          incident={{ ...found, status }}
+          onCancel={() => setShowDeleteDialog(false)}
+          onDeleted={() => navigate('/incidents')}
+        />
       )}
 
     </div>
