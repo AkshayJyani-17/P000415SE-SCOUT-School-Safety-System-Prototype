@@ -68,6 +68,9 @@ export const incidentAPI = {
     request(`/incidents/${id}/review-flag`, { method: 'PATCH', body: JSON.stringify({ reviewRequired, comment }) }),
   addReviewComment: (id, comment) =>
     request(`/incidents/${id}/review-comment`, { method: 'POST', body: JSON.stringify({ comment }) }),
+  // Soft delete. The backend keeps an audit copy; it is not restorable here.
+  remove: (id, { reasonCode, reason }) =>
+    request(`/incidents/${id}`, { method: 'DELETE', body: JSON.stringify({ reasonCode, reason }) }),
 }
 
 export const notificationsAPI = {

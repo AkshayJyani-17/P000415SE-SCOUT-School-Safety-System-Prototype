@@ -155,6 +155,20 @@ function canUpdateIncidentStatus(profile, incident) {
   return canReadIncident(profile, incident) && (isCompanyAdmin(profile.role) || isSchoolAdmin(profile.role))
 }
 
+// Deletion reasons are stored as a code so the audit trail stays analysable
+// instead of becoming a free-text dump.
+const DELETION_REASON_CODES = ['duplicate', 'test_or_drill', 'logged_in_error', 'wrong_school', 'other']
+
+const MAX_DELETION_REASON_LENGTH = 500
+
+// Only drills and incidents whose response has finished may be removed.
+// Deleting a live incident would pull the record out from under the people
+// responding to it, and the email acknowledgement link writes back into the
+// incident document (see routes/notifications.js).
+function canDeleteIncident(incident) {
+  return incident.isTest === true || incident.status === 'resolved'
+}
+
 function appendUniqueActor(list, profile, timestamp, timeField) {
   const existing = Array.isArray(list) ? list : []
   const alreadyRecorded = existing.some(actor =>
@@ -561,6 +575,91 @@ router.post('/:id/review-comment', verifyToken, async (req, res, next) => {
     const updatedIncident = docToObject(updatedDoc)
     invalidateIncidentListCache()
     res.json({ success: true, incident: toIncidentResponse(updatedIncident) })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// DELETE /api/incidents/:id
+// Company Admins may delete any incident, School Admins only their own
+// school's. Staff are excluded on purpose: a reporter must not be able to
+// erase their own report.
+//
+// This is a soft delete. The record is copied into deletedIncidents with who
+// deleted it, when and why, then removed from incidents. This is the same
+// move the archiver performs for aged out incidents. Deleted records are not
+// readable
+// through the app.
+router.delete('/:id', verifyToken, async (req, res, next) => {
+  try {
+    const profile = await getUserProfile(req.user)
+
+    if (!isCompanyAdmin(profile.role) && !isSchoolAdmin(profile.role)) {
+      return res.status(403).json({ error: 'Only admins can delete incidents.' })
+    }
+
+    const db = getDb()
+    const docRef = db.collection('incidents').doc(req.params.id)
+    const doc = await docRef.get()
+    const incident = docToObject(doc)
+
+    if (!incident) {
+      return res.status(404).json({ error: 'Incident not found.' })
+    }
+
+    // Reused so a School Admin is held to their own school here exactly as
+    // they are everywhere else in this file.
+    if (!canReadIncident(profile, incident)) {
+      return res.status(403).json({ error: 'You do not have permission to delete this incident.' })
+    }
+
+    if (!canDeleteIncident(incident)) {
+      return res.status(409).json({
+        error: 'Only test alerts and resolved incidents can be deleted. Resolve this incident first.',
+      })
+    }
+
+    const { reasonCode, reason } = req.body || {}
+
+    if (!DELETION_REASON_CODES.includes(reasonCode)) {
+      return res.status(400).json({ error: 'A valid deletion reason is required.' })
+    }
+
+    const detail = typeof reason === 'string' ? reason.trim() : ''
+
+    if (reasonCode === 'other' && !detail) {
+      return res.status(400).json({ error: 'Please describe the reason for deleting this incident.' })
+    }
+
+    if (detail.length > MAX_DELETION_REASON_LENGTH) {
+      return res.status(400).json({ error: `Reason must be ${MAX_DELETION_REASON_LENGTH} characters or fewer.` })
+    }
+
+    const now = new Date().toISOString()
+    const batch = db.batch()
+
+    batch.set(db.collection('deletedIncidents').doc(doc.id), {
+      ...doc.data(),
+      deletedAt: now,
+      deletionReasonCode: reasonCode,
+      deletionReason: detail,
+      deletedBy: {
+        uid: profile.uid || null,
+        name: profile.name || null,
+        email: profile.email || null,
+        role: profile.role || null,
+      },
+    })
+    batch.delete(docRef)
+
+    await batch.commit()
+
+    // Without these the incident keeps showing in the list and in dashboard
+    // counts, which are both served from caches.
+    invalidateIncidentListCache()
+    invalidateAnalyticsCache()
+
+    res.json({ success: true, id: doc.id })
   } catch (error) {
     next(error)
   }

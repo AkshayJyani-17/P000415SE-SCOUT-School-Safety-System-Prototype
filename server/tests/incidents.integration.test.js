@@ -13,12 +13,13 @@ function makeDoc(id, data) {
   }
 }
 
-function createTestDb({ incidents = {}, notifications = {}, users = {}, schools = {}, notificationRouting = {}, notificationRecipients = {} } = {}) {
+function createTestDb({ incidents = {}, notifications = {}, users = {}, schools = {}, notificationRouting = {}, notificationRecipients = {}, deletedIncidents = {} } = {}) {
   // schoolService caches the school list in a module-level store, so it has to
   // be cleared whenever a test swaps in a fresh database.
   require('../src/schoolCache').resetSchoolCache()
 
   const incidentStore = new Map(Object.entries(incidents).map(([id, value]) => [id, { ...value }]))
+  const deletedIncidentStore = new Map(Object.entries(deletedIncidents).map(([id, value]) => [id, { ...value }]))
   const notificationStore = new Map(Object.entries(notifications).map(([id, value]) => [id, { ...value }]))
   const userStore = new Map(Object.entries(users).map(([id, value]) => [id, { ...value }]))
   const schoolStore = new Map(Object.entries(schools).map(([id, value]) => [id, { ...value }]))
@@ -68,6 +69,8 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
           },
           doc(id) {
             return {
+              id,
+              __store: incidentStore,
               async get() {
                 return makeDoc(id, incidentStore.get(id))
               },
@@ -77,6 +80,9 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
                   throw new Error(`Incident ${id} not found`)
                 }
                 incidentStore.set(id, { ...existing, ...data })
+              },
+              async delete() {
+                incidentStore.delete(id)
               },
             }
           },
@@ -89,6 +95,27 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
                 return makeDoc(id, incidentStore.get(id))
               },
             }
+          },
+        }
+      }
+
+      if (name === 'deletedIncidents') {
+        return {
+          doc(id) {
+            return {
+              id,
+              __store: deletedIncidentStore,
+              async get() {
+                return makeDoc(id, deletedIncidentStore.get(id))
+              },
+              async set(data) {
+                deletedIncidentStore.set(id, { ...data })
+              },
+            }
+          },
+          async get() {
+            const docs = [...deletedIncidentStore.entries()].map(([id, record]) => makeDoc(id, record))
+            return { docs, empty: docs.length === 0 }
           },
         }
       }
@@ -151,6 +178,23 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
       throw new Error(`Unexpected collection: ${name}`)
     },
 
+    // Mirrors the subset of the Firestore batch API the routes actually use.
+    batch() {
+      const operations = []
+
+      return {
+        set(ref, data) {
+          operations.push(() => ref.__store.set(ref.id, { ...data }))
+        },
+        delete(ref) {
+          operations.push(() => ref.__store.delete(ref.id))
+        },
+        async commit() {
+          for (const apply of operations) apply()
+        },
+      }
+    },
+
     async runTransaction(callback) {
       const transaction = {
         async get(ref) {
@@ -172,6 +216,7 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
 
     stores: {
       incidents: incidentStore,
+      deletedIncidents: deletedIncidentStore,
       notifications: notificationStore,
       users: userStore,
       schools: schoolStore,
@@ -668,5 +713,229 @@ test('POST /api/incidents marks a normal alert as not a test', async () => {
 
     assert.equal(response.status, 201)
     assert.equal((await response.json()).isTest, false)
+  })
+})
+
+// ── DELETE /api/incidents/:id ─────────────────────────────────────────────────
+// Deletion is a soft delete: the record moves to deletedIncidents with who,
+// when and why. Only test alerts or resolved incidents are eligible.
+
+const DELETE_USERS = {
+  'company-uid': { name: 'Company Admin', email: 'company@scout.edu', role: 'companyAdmin' },
+  'school-admin-uid': { name: 'Riley Principal', email: 'principal@school.edu', role: 'schoolAdmin', schoolId: 'school_alpha' },
+  'staff-uid': { name: 'Staff User', email: 'staff@school.edu', role: 'staff', schoolId: 'school_alpha' },
+}
+
+function deletableDb(overrides = {}) {
+  return createTestDb({
+    users: DELETE_USERS,
+    incidents: {
+      resolvedAlpha: {
+        title: 'Duplicate fire report',
+        type: 'fire',
+        incidentNumber: 'INC-0007',
+        status: 'resolved',
+        schoolId: 'school_alpha',
+        schoolName: 'Alpha High',
+        createdAt: '2026-04-29T10:00:00.000Z',
+      },
+      ...overrides,
+    },
+  })
+}
+
+function deleteRequest(baseUrl, id, token, body = { reasonCode: 'duplicate', reason: 'Logged twice' }) {
+  return fetch(`${baseUrl}/api/incidents/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+test('DELETE /api/incidents/:id lets a Company Admin delete a resolved incident', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token')
+    assert.equal(response.status, 200)
+
+    const payload = await response.json()
+    assert.equal(payload.success, true)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), false)
+    assert.equal(fakeDb.stores.deletedIncidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id stores who deleted it, when and why', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'school-token', {
+      reasonCode: 'logged_in_error',
+      reason: 'Reported against the wrong building',
+    })
+    assert.equal(response.status, 200)
+
+    const record = fakeDb.stores.deletedIncidents.get('resolvedAlpha')
+    assert.equal(record.deletionReasonCode, 'logged_in_error')
+    assert.equal(record.deletionReason, 'Reported against the wrong building')
+    assert.equal(record.deletedBy.email, 'principal@school.edu')
+    assert.equal(record.deletedBy.role, 'schoolAdmin')
+    assert.ok(record.deletedAt, 'deletedAt should be recorded')
+    // The original incident data is retained for audit.
+    assert.equal(record.title, 'Duplicate fire report')
+  })
+})
+
+test('DELETE /api/incidents/:id lets a School Admin delete an incident at their own school', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'school-token')
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), false)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 when a School Admin targets another school', async () => {
+  fakeDb = deletableDb({
+    resolvedBeta: {
+      title: 'Resolved at another school',
+      status: 'resolved',
+      schoolId: 'school_beta',
+      createdAt: '2026-04-29T10:00:00.000Z',
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedBeta', 'school-token')
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('resolvedBeta'), true)
+    assert.equal(fakeDb.stores.deletedIncidents.size, 0)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 for staff', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'staff-token')
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+    assert.equal(fakeDb.stores.deletedIncidents.size, 0)
+  })
+})
+
+test('DELETE /api/incidents/:id deletes a test alert whatever its status', async () => {
+  fakeDb = deletableDb({
+    testDrill: {
+      title: 'Lockdown drill',
+      status: 'triggered',
+      isTest: true,
+      schoolId: 'school_alpha',
+      createdAt: '2026-04-29T10:00:00.000Z',
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'testDrill', 'school-token', {
+      reasonCode: 'test_or_drill',
+      reason: '',
+    })
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('testDrill'), false)
+  })
+})
+
+for (const liveStatus of ['triggered', 'acknowledged', 'in-progress']) {
+  test(`DELETE /api/incidents/:id returns 409 for a live ${liveStatus} incident`, async () => {
+    fakeDb = deletableDb({
+      liveIncident: {
+        title: 'Live emergency',
+        status: liveStatus,
+        schoolId: 'school_alpha',
+        createdAt: '2026-04-29T10:00:00.000Z',
+      },
+    })
+
+    await withServer(createApp(), async baseUrl => {
+      const response = await deleteRequest(baseUrl, 'liveIncident', 'company-token')
+      assert.equal(response.status, 409)
+      // A live incident must survive untouched so responders keep seeing it.
+      assert.equal(fakeDb.stores.incidents.has('liveIncident'), true)
+      assert.equal(fakeDb.stores.deletedIncidents.size, 0)
+    })
+  })
+}
+
+test('DELETE /api/incidents/:id returns 400 when no reason is given', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token', {})
+    assert.equal(response.status, 400)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 400 for an unrecognised reason code', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token', {
+      reasonCode: 'because_i_said_so',
+      reason: 'No',
+    })
+    assert.equal(response.status, 400)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id requires detail when the reason is "other"', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token', {
+      reasonCode: 'other',
+      reason: '   ',
+    })
+    assert.equal(response.status, 400)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id rejects an over-long reason', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token', {
+      reasonCode: 'duplicate',
+      reason: 'x'.repeat(501),
+    })
+    assert.equal(response.status, 400)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 404 for an unknown incident', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'does-not-exist', 'company-token')
+    assert.equal(response.status, 404)
+  })
+})
+
+test('a deleted incident no longer appears in the incident list', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token')
+
+    const response = await fetch(`${baseUrl}/api/incidents`, {
+      headers: { Authorization: 'Bearer company-token' },
+    })
+    const payload = await response.json()
+    assert.equal(payload.incidents.some(incident => incident.id === 'resolvedAlpha'), false)
   })
 })
