@@ -174,6 +174,13 @@ describe('Deleting from the incident list', () => {
       reasonCode: 'duplicate',
       reason: '',
     }))
+
+    // Success is confirmed first; the row only goes once it is acknowledged.
+    expect(await screen.findByText(/incident deleted/i)).toBeInTheDocument()
+    expect(screen.getByText(/duplicate fire report/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /close/i }))
+
     await waitFor(() => expect(screen.queryByText(/duplicate fire report/i)).not.toBeInTheDocument())
     // The untouched incident stays put.
     expect(screen.getByText(/fire alarm sounding/i)).toBeInTheDocument()

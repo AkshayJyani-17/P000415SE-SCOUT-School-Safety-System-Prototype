@@ -186,7 +186,7 @@ describe('Incident deletion: confirmation step', () => {
 })
 
 describe('Incident deletion: removal', () => {
-  test('confirming sends the reason and returns to the incident list', async () => {
+  test('confirming sends the reason and reports success before leaving', async () => {
     const dialog = await openDialog()
 
     fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'duplicate' } })
@@ -197,6 +197,13 @@ describe('Incident deletion: removal', () => {
       reasonCode: 'duplicate',
       reason: 'Logged twice',
     }))
+
+    // The outcome is confirmed before the page navigates away.
+    expect(await screen.findByText(/incident deleted/i)).toBeInTheDocument()
+    expect(screen.getByText(/fire · INC-0007/i)).toBeInTheDocument()
+    expect(mockNavigate).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /close/i }))
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/incidents'))
   })
 

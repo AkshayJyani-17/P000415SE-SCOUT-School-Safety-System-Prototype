@@ -204,9 +204,27 @@ describe('Deleting from the dashboard', () => {
       reasonCode: 'duplicate',
       reason: '',
     }))
+
+    expect(await screen.findByText(/incident deleted/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /close/i }))
+
     await waitFor(() => expect(screen.queryByText(/duplicate fire report/i)).not.toBeInTheDocument())
     // Untouched incidents stay on the dashboard.
     expect(screen.getByText(/medical response underway/i)).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  test('a failed delete shows no success message and keeps the incident', async () => {
+    mockRemove.mockRejectedValueOnce(new Error('Incident not found.'))
+    await renderDashboard()
+    fireEvent.click(deleteButton('INC-0007'))
+
+    const dialog = within(await screen.findByRole('dialog'))
+    fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'duplicate' } })
+    fireEvent.click(dialog.getByRole('button', { name: /^delete incident$/i }))
+
+    expect(await dialog.findByText(/incident not found/i)).toBeInTheDocument()
+    expect(screen.queryByText(/incident deleted/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/duplicate fire report/i)).toBeInTheDocument()
   })
 })

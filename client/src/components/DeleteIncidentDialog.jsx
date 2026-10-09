@@ -12,6 +12,7 @@ export default function DeleteIncidentDialog({ incident, onCancel, onDeleted }) 
   const [reasonCode, setReasonCode] = useState('')
   const [detail, setDetail] = useState('')
   const [deleting, setDeleting] = useState(false)
+  const [deleted, setDeleted] = useState(false)
   const [error, setError] = useState('')
 
   // The incident list payload carries acknowledgedBy but not notifications, so
@@ -21,16 +22,55 @@ export default function DeleteIncidentDialog({ incident, onCancel, onDeleted }) 
 
   const confirmable = Boolean(reasonCode) && (reasonCode !== 'other' || detail.trim().length > 0)
 
+  const incidentLabel = `${incident.type} · ${incident.incidentNumber || incident.id}`
+
   const handleDelete = async () => {
     setDeleting(true)
     setError('')
     try {
       await incidentAPI.remove(incident.id, { reasonCode, reason: detail })
-      onDeleted(incident.id)
+      setDeleted(true)
+      setDeleting(false)
     } catch (err) {
       setError(err.message || 'Failed to delete this incident. Please try again.')
       setDeleting(false)
     }
+  }
+
+  if (deleted) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-incident-title"
+      >
+        <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6">
+          <h2
+            id="delete-incident-title"
+            className="text-lg font-semibold text-gray-900 mb-2 flex items-center gap-2"
+          >
+            <span aria-hidden="true">✅</span> Incident deleted
+          </h2>
+
+          <p className="text-sm text-gray-600" aria-live="polite">
+            <span className="font-medium text-gray-900">{incidentLabel}</span> has been removed from
+            the incident log, dashboard counts and analytics. A copy has been kept for audit.
+          </p>
+
+          <div className="flex justify-end mt-5">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => onDeleted(incident.id)}
+              className="px-4 py-2 bg-gray-800 text-white text-sm font-medium rounded-lg hover:bg-gray-900 transition-colors"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -46,9 +86,7 @@ export default function DeleteIncidentDialog({ incident, onCancel, onDeleted }) 
         </h2>
 
         <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 mb-3">
-          <p className="text-sm font-medium text-gray-900">
-            {incident.type} · {incident.incidentNumber || incident.id}
-          </p>
+          <p className="text-sm font-medium text-gray-900">{incidentLabel}</p>
           <p className="text-xs text-gray-500 mt-0.5">{incident.schoolName || 'Unknown school'}</p>
         </div>
 
