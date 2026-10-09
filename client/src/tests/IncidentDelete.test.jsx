@@ -84,12 +84,37 @@ describe('Incident deletion: availability', () => {
     expect(screen.getByRole('button', { name: /^delete incident$/i })).toBeInTheDocument()
   })
 
-  test('a live incident cannot be deleted and explains why', async () => {
-    mockIncident = { ...RESOLVED_INCIDENT, status: 'triggered' }
+  test('a freshly triggered incident cannot be deleted and explains why', async () => {
+    mockIncident = { ...RESOLVED_INCIDENT, status: 'triggered', acknowledgedBy: [] }
     await renderPage()
 
     expect(screen.queryByRole('button', { name: /^delete incident$/i })).not.toBeInTheDocument()
-    expect(screen.getByText(/only test alerts and resolved incidents can be deleted/i)).toBeInTheDocument()
+    expect(screen.getByText(/can be deleted once it is resolved/i)).toBeInTheDocument()
+  })
+
+  test('an overdue incident nobody acknowledged can be deleted', async () => {
+    // The threshold is 15 minutes, so an hour-old unanswered alert is abandoned.
+    mockIncident = {
+      ...RESOLVED_INCIDENT,
+      status: 'triggered',
+      acknowledgedBy: [],
+      createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    }
+    await renderPage()
+
+    expect(screen.getByRole('button', { name: /^delete incident$/i })).toBeInTheDocument()
+  })
+
+  test('an overdue incident someone acknowledged stays protected', async () => {
+    mockIncident = {
+      ...RESOLVED_INCIDENT,
+      status: 'triggered',
+      acknowledgedBy: [{ name: 'Riley Principal' }],
+      createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    }
+    await renderPage()
+
+    expect(screen.queryByRole('button', { name: /^delete incident$/i })).not.toBeInTheDocument()
   })
 
   test('a test alert can be deleted even while still triggered', async () => {
@@ -176,13 +201,13 @@ describe('Incident deletion: removal', () => {
   })
 
   test('a rejected delete surfaces the backend message and keeps the dialog open', async () => {
-    mockRemove.mockRejectedValueOnce(new Error('Only test alerts and resolved incidents can be deleted.'))
+    mockRemove.mockRejectedValueOnce(new Error('Only test alerts, resolved incidents, and overdue incidents that nobody has acknowledged can be deleted.'))
     const dialog = await openDialog()
 
     fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'duplicate' } })
     fireEvent.click(dialog.getByRole('button', { name: /^delete incident$/i }))
 
-    expect(await dialog.findByText(/only test alerts and resolved incidents can be deleted/i)).toBeInTheDocument()
+    expect(await dialog.findByText(/overdue incidents that nobody has acknowledged/i)).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(mockNavigate).not.toHaveBeenCalled()
   })

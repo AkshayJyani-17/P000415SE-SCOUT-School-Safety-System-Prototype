@@ -145,6 +145,24 @@ describe('Deleting from the dashboard', () => {
     expect(deleteButton('INC-0009')).toBeInTheDocument()
   })
 
+  test('an overdue alert nobody acknowledged is deletable from the dashboard', async () => {
+    // Matches the real dashboard: stale triggered records nobody ever answered.
+    mockIncidents = [{
+      ...ACKNOWLEDGED,
+      status: 'triggered',
+      acknowledgedBy: [],
+      createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+    }]
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    )
+    await screen.findByText(/medical response underway/i)
+
+    expect(deleteButton('INC-0008')).toBeInTheDocument()
+  })
+
   test('a resolved test alert is deletable from the recent list', async () => {
     mockIncidents = [{ ...RESOLVED, isTest: true }]
     await renderDashboard()

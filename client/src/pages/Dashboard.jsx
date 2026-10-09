@@ -465,6 +465,7 @@ export default function Dashboard() {
                   <DeleteIncidentButton
                     incident={incident}
                     isAdmin={isAdmin}
+                    overdueThresholdMinutes={overdueThresholdMinutes}
                     onRequestDelete={setIncidentToDelete}
                   />
                 </div>
@@ -570,6 +571,7 @@ export default function Dashboard() {
                 <DeleteIncidentButton
                   incident={incident}
                   isAdmin={isAdmin}
+                  overdueThresholdMinutes={overdueThresholdMinutes}
                   onRequestDelete={setIncidentToDelete}
                 />
 

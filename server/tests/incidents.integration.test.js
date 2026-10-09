@@ -13,13 +13,17 @@ function makeDoc(id, data) {
   }
 }
 
-function createTestDb({ incidents = {}, notifications = {}, users = {}, schools = {}, notificationRouting = {}, notificationRecipients = {}, deletedIncidents = {} } = {}) {
+function createTestDb({ incidents = {}, notifications = {}, users = {}, schools = {}, notificationRouting = {}, notificationRecipients = {}, deletedIncidents = {}, settings = {}, schoolSettings = {} } = {}) {
   // schoolService caches the school list in a module-level store, so it has to
   // be cleared whenever a test swaps in a fresh database.
   require('../src/schoolCache').resetSchoolCache()
 
   const incidentStore = new Map(Object.entries(incidents).map(([id, value]) => [id, { ...value }]))
   const deletedIncidentStore = new Map(Object.entries(deletedIncidents).map(([id, value]) => [id, { ...value }]))
+  // The delete rule resolves the overdue threshold the same way GET /settings
+  // does, so the fake needs the settings document and per-school overrides.
+  const settingsStore = new Map(Object.entries(settings).map(([id, value]) => [id, { ...value }]))
+  const schoolSettingsStore = new Map(Object.entries(schoolSettings).map(([id, value]) => [id, { ...value }]))
   const notificationStore = new Map(Object.entries(notifications).map(([id, value]) => [id, { ...value }]))
   const userStore = new Map(Object.entries(users).map(([id, value]) => [id, { ...value }]))
   const schoolStore = new Map(Object.entries(schools).map(([id, value]) => [id, { ...value }]))
@@ -93,6 +97,19 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
               id,
               async get() {
                 return makeDoc(id, incidentStore.get(id))
+              },
+            }
+          },
+        }
+      }
+
+      if (name === 'schoolSettings') {
+        return {
+          doc(id) {
+            return {
+              id,
+              async get() {
+                return makeDoc(id, schoolSettingsStore.get(id))
               },
             }
           },
@@ -178,6 +195,15 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
       throw new Error(`Unexpected collection: ${name}`)
     },
 
+    doc(path) {
+      return {
+        id: path,
+        async get() {
+          return makeDoc(path, settingsStore.get(path))
+        },
+      }
+    },
+
     // Mirrors the subset of the Firestore batch API the routes actually use.
     batch() {
       const operations = []
@@ -217,6 +243,8 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
     stores: {
       incidents: incidentStore,
       deletedIncidents: deletedIncidentStore,
+      settings: settingsStore,
+      schoolSettings: schoolSettingsStore,
       notifications: notificationStore,
       users: userStore,
       schools: schoolStore,
@@ -847,14 +875,16 @@ test('DELETE /api/incidents/:id deletes a test alert whatever its status', async
   })
 })
 
-for (const liveStatus of ['triggered', 'acknowledged', 'in-progress']) {
+const minutesAgo = minutes => new Date(Date.now() - minutes * 60 * 1000).toISOString()
+
+for (const liveStatus of ['acknowledged', 'in-progress']) {
   test(`DELETE /api/incidents/:id returns 409 for a live ${liveStatus} incident`, async () => {
     fakeDb = deletableDb({
       liveIncident: {
         title: 'Live emergency',
         status: liveStatus,
         schoolId: 'school_alpha',
-        createdAt: '2026-04-29T10:00:00.000Z',
+        createdAt: minutesAgo(600),
       },
     })
 
@@ -867,6 +897,85 @@ for (const liveStatus of ['triggered', 'acknowledged', 'in-progress']) {
     })
   })
 }
+
+test('DELETE /api/incidents/:id returns 409 for an alert still inside the overdue window', async () => {
+  fakeDb = deletableDb({
+    freshAlert: {
+      title: 'Just triggered',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(2),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'freshAlert', 'company-token')
+    assert.equal(response.status, 409)
+    // Dispatch may still be in flight, so this one is protected.
+    assert.equal(fakeDb.stores.incidents.has('freshAlert'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id deletes an overdue alert nobody acknowledged', async () => {
+  fakeDb = deletableDb({
+    abandoned: {
+      title: 'asdsfgfg',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(60),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'abandoned', 'company-token')
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('abandoned'), false)
+    assert.equal(fakeDb.stores.deletedIncidents.has('abandoned'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 409 for an overdue alert someone acknowledged', async () => {
+  fakeDb = deletableDb({
+    answered: {
+      title: 'Overdue but answered',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(60),
+      acknowledgedBy: [{ name: 'Riley Principal', acknowledgedAt: minutesAgo(30) }],
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'answered', 'company-token')
+    assert.equal(response.status, 409)
+    // Someone responded, so the record of that response is protected.
+    assert.equal(fakeDb.stores.incidents.has('answered'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id honours a school overdue threshold override', async () => {
+  fakeDb = createTestDb({
+    users: DELETE_USERS,
+    // The company default of 15 minutes would make this deletable; the school
+    // override of 24 hours must win, exactly as GET /settings resolves it.
+    settings: { 'settings/global': { overdueThresholdMinutes: 15 } },
+    schoolSettings: { school_alpha: { overdueThresholdMinutes: 1440 } },
+    incidents: {
+      recentForSchool: {
+        title: 'Two hours old',
+        status: 'triggered',
+        schoolId: 'school_alpha',
+        createdAt: minutesAgo(120),
+      },
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'recentForSchool', 'company-token')
+    assert.equal(response.status, 409)
+    assert.equal(fakeDb.stores.incidents.has('recentForSchool'), true)
+  })
+})
 
 test('DELETE /api/incidents/:id returns 400 when no reason is given', async () => {
   fakeDb = deletableDb()

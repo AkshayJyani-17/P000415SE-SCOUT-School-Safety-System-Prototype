@@ -10,6 +10,7 @@ const {
 } = require('../incidentListCache')
 
 const { watchIncidents } = require('../incidentStream')
+const { getEffectiveOverdueThresholdMinutes } = require('./settings')
 
 const router = express.Router()
 
@@ -161,12 +162,39 @@ const DELETION_REASON_CODES = ['duplicate', 'test_or_drill', 'logged_in_error', 
 
 const MAX_DELETION_REASON_LENGTH = 500
 
-// Only drills and incidents whose response has finished may be removed.
-// Deleting a live incident would pull the record out from under the people
-// responding to it, and the email acknowledgement link writes back into the
-// incident document (see routes/notifications.js).
-function canDeleteIncident(incident) {
-  return incident.isTest === true || incident.status === 'resolved'
+const DELETE_INELIGIBLE_MESSAGE =
+  'Only test alerts, resolved incidents, and overdue incidents that nobody has acknowledged can be deleted.'
+
+function incidentAgeMinutes(incident) {
+  const raw = incident.createdAt
+  if (!raw) return 0
+
+  const created = raw.toDate ? raw.toDate() : new Date(raw)
+  if (Number.isNaN(created.getTime())) return 0
+
+  return Math.floor((Date.now() - created.getTime()) / 60000)
+}
+
+// What may be removed, and why:
+//   - a drill, which carries no genuine record value;
+//   - a resolved incident, whose response has finished;
+//   - an abandoned one: still triggered, nobody acknowledged it, and already
+//     past the overdue threshold the dashboard flags it with. Nothing is
+//     responding to it, so no response record is destroyed.
+//
+// Everything else is a live response. Deleting one of those would pull the
+// record out from under the people working it, and the email acknowledgement
+// link writes back into the incident document (see routes/notifications.js).
+function canDeleteIncident(incident, overdueThresholdMinutes) {
+  if (incident.isTest === true) return true
+  if (incident.status === 'resolved') return true
+
+  if (incident.status !== 'triggered') return false
+
+  const acknowledged = Array.isArray(incident.acknowledgedBy) && incident.acknowledgedBy.length > 0
+  if (acknowledged) return false
+
+  return incidentAgeMinutes(incident) > overdueThresholdMinutes
 }
 
 function appendUniqueActor(list, profile, timestamp, timeField) {
@@ -613,10 +641,11 @@ router.delete('/:id', verifyToken, async (req, res, next) => {
       return res.status(403).json({ error: 'You do not have permission to delete this incident.' })
     }
 
-    if (!canDeleteIncident(incident)) {
-      return res.status(409).json({
-        error: 'Only test alerts and resolved incidents can be deleted. Resolve this incident first.',
-      })
+    // Resolved per-school so the gate matches the "Overdue" badge the user sees.
+    const overdueThresholdMinutes = await getEffectiveOverdueThresholdMinutes(incident.schoolId)
+
+    if (!canDeleteIncident(incident, overdueThresholdMinutes)) {
+      return res.status(409).json({ error: DELETE_INELIGIBLE_MESSAGE })
     }
 
     const { reasonCode, reason } = req.body || {}

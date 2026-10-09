@@ -12,8 +12,8 @@ import { canDeleteIncident } from './incidentDeletion'
  * List rows open the incident when clicked, so the press is stopped from
  * bubbling up to the row.
  */
-export default function DeleteIncidentButton({ incident, isAdmin, onRequestDelete }) {
-  if (!isAdmin || !canDeleteIncident(incident)) return null
+export default function DeleteIncidentButton({ incident, isAdmin, overdueThresholdMinutes, onRequestDelete }) {
+  if (!isAdmin || !canDeleteIncident(incident, overdueThresholdMinutes)) return null
 
   return (
     <button

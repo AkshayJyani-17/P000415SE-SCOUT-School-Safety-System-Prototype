@@ -12,11 +12,40 @@ export const DELETION_REASONS = [
 ]
 
 export const DELETE_INELIGIBLE_MESSAGE =
-  'Only test alerts and resolved incidents can be deleted. Resolve this incident first.'
+  'This incident has a response underway. It can be deleted once it is resolved, or once it is overdue with nobody having acknowledged it.'
 
-// Only drills and incidents whose response has finished may be deleted, so a
-// live emergency is never pulled out from under the people responding to it.
-// The backend enforces the same rule; this only keeps the UI honest.
-export function canDeleteIncident(incident) {
-  return Boolean(incident?.isTest) || incident?.status === 'resolved'
+// Matches DEFAULT_OVERDUE_THRESHOLD_MINUTES on the server.
+const DEFAULT_OVERDUE_THRESHOLD_MINUTES = 15
+
+function elapsedMinutes(incident) {
+  const raw = incident.createdAt
+  if (!raw) return 0
+
+  const created = new Date(raw)
+  if (Number.isNaN(created.getTime())) return 0
+
+  return Math.floor((Date.now() - created.getTime()) / 60000)
+}
+
+// What may be deleted, and why:
+//   - a drill, which carries no genuine record value;
+//   - a resolved incident, whose response has finished;
+//   - an abandoned one: still triggered, nobody acknowledged it, and already
+//     past the overdue threshold the UI flags it with. Nothing is responding
+//     to it, so no response record is destroyed.
+//
+// Everything else is a live response and stays protected, including an alert
+// that only just fired and may still be going out.
+//
+// The backend enforces the same rule; this only keeps the UI honest, so the
+// threshold must be the effective per-school one the pages already load.
+export function canDeleteIncident(incident, overdueThresholdMinutes = DEFAULT_OVERDUE_THRESHOLD_MINUTES) {
+  if (!incident) return false
+  if (incident.isTest) return true
+  if (incident.status === 'resolved') return true
+
+  if (incident.status !== 'triggered') return false
+  if (Array.isArray(incident.acknowledgedBy) && incident.acknowledgedBy.length > 0) return false
+
+  return elapsedMinutes(incident) > overdueThresholdMinutes
 }

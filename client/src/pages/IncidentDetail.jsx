@@ -745,7 +745,7 @@ export default function IncidentDetail() {
       {isAdmin && (
         <div className="mt-6 border-t border-gray-200 pt-5">
           <h2 className="text-sm font-semibold text-gray-700 mb-1">Delete this incident</h2>
-          {canDeleteIncident({ ...found, status }) ? (
+          {canDeleteIncident({ ...found, status }, overdueThresholdMinutes) ? (
             <>
               <p className="text-xs text-gray-500 mb-3">
                 Removes the incident from the incident log, dashboard counts and analytics. A copy is

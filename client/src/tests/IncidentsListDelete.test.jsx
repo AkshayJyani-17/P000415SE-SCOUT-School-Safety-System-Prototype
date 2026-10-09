@@ -115,6 +115,22 @@ describe('Deleting from the incident list', () => {
     expect(screen.queryByRole('button', { name: /delete inc-0008/i })).not.toBeInTheDocument()
   })
 
+  test('an overdue alert nobody acknowledged is deletable from the list', async () => {
+    // Exactly the stale junk the delete action exists to clear out.
+    mockIncidents = [{
+      ...LIVE,
+      createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+    }]
+    render(
+      <MemoryRouter>
+        <Incidents />
+      </MemoryRouter>
+    )
+    await screen.findByText(/fire alarm sounding/i)
+
+    expect(deleteButton('INC-0008')).toBeInTheDocument()
+  })
+
   test('a test alert is deletable from the list even while triggered', async () => {
     mockIncidents = [{ ...LIVE, isTest: true }]
     render(
