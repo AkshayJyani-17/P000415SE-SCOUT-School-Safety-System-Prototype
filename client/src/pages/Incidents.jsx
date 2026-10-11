@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { archiveAPI, getIncidents, settingsAPI } from '../api/client'
 import DeleteIncidentButton from '../components/DeleteIncidentButton'
 import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
@@ -139,6 +139,7 @@ export default function Incidents() {
   const navigate = useNavigate()
   const auth = useAuth()
   const { authLoading, isCompanyAdmin, isSchoolAdmin, userRole } = auth
+  const isStaff = userRole === 'Staff'
   const deleteViewer = deleteViewerFrom(auth)
   const { schools } = useSchools()
   const [incidents, setIncidents] = useState([])
@@ -319,8 +320,8 @@ export default function Incidents() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className={isStaff ? "p-4 sm:p-6 max-w-5xl mx-auto" : "p-6 max-w-5xl mx-auto"}>
+      <div className={isStaff ? "flex flex-wrap items-center justify-between gap-3 mb-6" : "flex items-center justify-between mb-6"}>
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Incident Log</h1>
           <p className="text-sm text-gray-500">{subtitleText}</p>
@@ -331,7 +332,7 @@ export default function Incidents() {
           )}
           {!isSchoolAdmin && !isCompanyAdmin && (
             <p className="text-xs text-gray-400 mt-1">
-              View alerts you created or incidents where you are involved.
+              View incidents you created or are assigned to.
             </p>
           )}
         </div>
@@ -364,9 +365,11 @@ export default function Incidents() {
           placeholder="Search incidents..."
           value={search}
           onChange={event => setSearch(event.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 w-56"
+          aria-label="Search incidents"
+          className={`px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 ${isStaff ? "w-full sm:w-56" : "w-56"}`}
         />
         <select
+          aria-label="Status"
           value={filterStatus}
           onChange={event => setFilterStatus(event.target.value)}
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -381,6 +384,7 @@ export default function Incidents() {
           {isCompanyAdmin && <option value="archived">Archived</option>}
         </select>
         <select
+          aria-label="Priority"
           value={filterPriority}
           onChange={event => setFilterPriority(event.target.value)}
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -392,6 +396,7 @@ export default function Incidents() {
           <option value="low">Low</option>
         </select>
         <select
+          aria-label="Date range"
           value={filterDateRange}
           onChange={event => setFilterDateRange(event.target.value)}
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -465,6 +470,41 @@ export default function Incidents() {
             filtered.map(incident => {
               const elapsedMinutes = getElapsedMinutes(incident)
               const overdue = isOverdue(incident, overdueThresholdMinutes)
+
+              if (isStaff) {
+                const timeline = [
+                  ['Created', incident.createdAt],
+                  ['Updated', incident.updatedAt],
+                ].filter(([, value]) => value && !Number.isNaN(Date.parse(value)))
+
+                return (
+                  <article key={incident.id} className={`p-4 ${overdue ? 'bg-amber-50 border-l-4 border-l-amber-400' : ''}`}>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <Link to={`/incidents/${incident.id}`} className="min-w-0 break-words text-sm font-semibold text-gray-900 underline decoration-gray-300 hover:text-red-700">
+                        {incident.incidentNumber ? `${incident.incidentNumber} · ` : ''}{incident.title}
+                      </Link>
+                      <span className={`shrink-0 text-xs font-semibold px-2 py-1 rounded ${statusColors[incident.status]}`}>
+                        {incident.status === 'in-progress' ? 'In Progress' : incident.status.charAt(0).toUpperCase() + incident.status.slice(1)}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-gray-600 break-words">{incident.location}</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <span className={`text-xs px-2 py-0.5 rounded ${priorityColors[incident.priority]}`}>{incident.priority} priority</span>
+                      {incident.isTest && <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">TEST</span>}
+                      {overdue && <span className="text-xs text-amber-700">Unacknowledged for {formatDuration(elapsedMinutes)}</span>}
+                    </div>
+                    <dl aria-label="Incident timeline" className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-xs text-gray-500">
+                      {timeline.map(([label, value]) => (
+                        <div key={label}>
+                          <dt className="font-medium">{label}</dt>
+                          <dd><time dateTime={value}>{new Date(value).toLocaleString()}</time></dd>
+                        </div>
+                      ))}
+                      {!timeline.length && <div><dt>Created</dt><dd>{incident.timestamp || 'Time unavailable'}</dd></div>}
+                    </dl>
+                  </article>
+                )
+              }
 
               return (
                 <div
