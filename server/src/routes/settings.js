@@ -73,6 +73,20 @@ async function getSchoolThreshold(schoolId) {
   return isValidThresholdMinutes(value) ? value : null
 }
 
+// Resolves the overdue threshold that applies to a school: a school override
+// wins over the company-wide default. Shared with the incident delete rule so
+// the two agree on when an unacknowledged alert counts as abandoned. An invalid
+// stored value falls back to the default rather than being trusted.
+async function getEffectiveOverdueThresholdMinutes(schoolId) {
+  const doc = await getDb().doc(SETTINGS_DOC).get()
+  const companyValue = doc.exists ? doc.data()?.overdueThresholdMinutes : null
+  const schoolValue = await getSchoolThreshold(schoolId)
+
+  if (schoolValue !== null) return schoolValue
+
+  return isValidThresholdMinutes(companyValue) ? companyValue : DEFAULT_OVERDUE_THRESHOLD_MINUTES
+}
+
 // GET /api/settings: any authenticated user may read (needed for overdue computation).
 // The overdue threshold is resolved per-school: a school override wins over the
 // company-wide default, and both are returned so the UI can show the default as a reference.
@@ -242,3 +256,4 @@ router.patch('/archive-retention', verifyToken, async (req, res, next) => {
 module.exports = router
 // Exposed for unit testing (Express router is a function; attaching a property is safe).
 module.exports.isValidThresholdMinutes = isValidThresholdMinutes
+module.exports.getEffectiveOverdueThresholdMinutes = getEffectiveOverdueThresholdMinutes

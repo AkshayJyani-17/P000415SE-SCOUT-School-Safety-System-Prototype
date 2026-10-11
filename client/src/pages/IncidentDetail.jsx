@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getIncidentById, incidentAPI, settingsAPI } from '../api/client'
+import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
+import {
+  canRoleDeleteIncident,
+  deleteViewerFrom,
+  isIncidentDeletable,
+  DELETE_INELIGIBLE_MESSAGE,
+} from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 
 const progressSteps = [
@@ -112,7 +119,9 @@ function formatDuration(minutes) {
 export default function IncidentDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { currentUser, userRole, isAdmin, isSchoolAdmin, authLoading } = useAuth()
+  const auth = useAuth()
+  const { currentUser, userRole, isAdmin, isSchoolAdmin, authLoading } = auth
+  const deleteViewer = deleteViewerFrom(auth)
   const [incident, setIncident] = useState(null)
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(true)
@@ -130,6 +139,9 @@ export default function IncidentDetail() {
 
   // Overdue threshold
   const [overdueThresholdMinutes, setOverdueThresholdMinutes] = useState(15)
+
+  // Delete (soft) state. The dialog owns the reason and request state.
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
 
   // Review flag state
   const [showFlagForm, setShowFlagForm] = useState(false)
@@ -733,6 +745,39 @@ export default function IncidentDetail() {
         <div className="text-center text-sm text-gray-400 py-3">
           This incident has been archived.
         </div>
+      )}
+
+      {/* Delete incident, admins only. Staff are excluded so a reporter
+          cannot erase their own report. */}
+      {canRoleDeleteIncident({ ...found, status }, deleteViewer) && (
+        <div className="mt-6 border-t border-gray-200 pt-5">
+          <h2 className="text-sm font-semibold text-gray-700 mb-1">Delete this incident</h2>
+          {isIncidentDeletable({ ...found, status }, overdueThresholdMinutes) ? (
+            <>
+              <p className="text-xs text-gray-500 mb-3">
+                Removes the incident from the incident log, dashboard counts and analytics. A copy is
+                kept for audit but cannot be restored from the app.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowDeleteDialog(true)}
+                className="px-4 py-2 border border-red-300 text-red-700 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors"
+              >
+                Delete Incident
+              </button>
+            </>
+          ) : (
+            <p className="text-xs text-gray-500">{DELETE_INELIGIBLE_MESSAGE}</p>
+          )}
+        </div>
+      )}
+
+      {showDeleteDialog && (
+        <DeleteIncidentDialog
+          incident={{ ...found, status }}
+          onCancel={() => setShowDeleteDialog(false)}
+          onDeleted={() => navigate('/incidents')}
+        />
       )}
 
     </div>

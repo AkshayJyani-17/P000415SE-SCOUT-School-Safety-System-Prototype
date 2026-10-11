@@ -7,6 +7,9 @@ import ShortcutCard from '../components/ShortcutCard'
 import QuickViewStrip from '../components/QuickViewStrip'
 import SchoolAdminStatus from '../components/SchoolAdminStatus'
 import { incidentAPI, settingsAPI } from '../api/client'
+import DeleteIncidentButton from '../components/DeleteIncidentButton'
+import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
+import { deleteViewerFrom } from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 import { useSchools } from '../context/SchoolsContext'
 
@@ -119,18 +122,24 @@ function formatDuration(minutes) {
 export default function Dashboard() {
   const navigate = useNavigate()
 
+  const auth = useAuth()
+
   const {
     currentUser,
     userRole,
     isCompanyAdmin,
     isSchoolAdmin,
     isStaff,
-  } = useAuth()
+  } = auth
+
+  const deleteViewer = deleteViewerFrom(auth)
 
   const { schools } = useSchools()
 
   const [incidents, setIncidents] = useState([])
   const [sortOrder, setSortOrder] = useState('newest')
+  // The incident awaiting delete confirmation, or null when the dialog is shut.
+  const [incidentToDelete, setIncidentToDelete] = useState(null)
 
   const [selectedSchool, setSelectedSchool] = useState(
     () => sessionStorage.getItem('dashboardSelectedSchool') || 'all'
@@ -429,6 +438,12 @@ export default function Dashboard() {
                     </p>
                   </div>
 
+                  {incident.isTest && (
+                    <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 font-semibold whitespace-nowrap">
+                      TEST
+                    </span>
+                  )}
+
                   <span
                     className={`text-xs px-2 py-0.5 rounded ${
                       priorityColors[incident.priority]
@@ -450,6 +465,13 @@ export default function Dashboard() {
                       ⏰ Overdue
                     </span>
                   )}
+
+                  <DeleteIncidentButton
+                    incident={incident}
+                    viewer={deleteViewer}
+                    overdueThresholdMinutes={overdueThresholdMinutes}
+                    onRequestDelete={setIncidentToDelete}
+                  />
                 </div>
               )
             })}
@@ -528,6 +550,12 @@ export default function Dashboard() {
                   </p>
                 </div>
 
+                {incident.isTest && (
+                  <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 font-semibold whitespace-nowrap">
+                    TEST
+                  </span>
+                )}
+
                 <span
                   className={`text-xs px-2 py-0.5 rounded ${
                     priorityColors[incident.priority]
@@ -544,6 +572,13 @@ export default function Dashboard() {
                   {incident.status}
                 </span>
 
+                <DeleteIncidentButton
+                  incident={incident}
+                  viewer={deleteViewer}
+                  overdueThresholdMinutes={overdueThresholdMinutes}
+                  onRequestDelete={setIncidentToDelete}
+                />
+
                 <span className="text-gray-400">
                   &gt;
                 </span>
@@ -552,6 +587,17 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      )}
+
+      {incidentToDelete && (
+        <DeleteIncidentDialog
+          incident={incidentToDelete}
+          onCancel={() => setIncidentToDelete(null)}
+          onDeleted={deletedId => {
+            setIncidents(current => current.filter(record => record.id !== deletedId))
+            setIncidentToDelete(null)
+          }}
+        />
       )}
     </div>
   )

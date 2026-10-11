@@ -10,6 +10,7 @@ const {
 } = require('../incidentListCache')
 
 const { watchIncidents } = require('../incidentStream')
+const { getEffectiveOverdueThresholdMinutes } = require('./settings')
 
 const router = express.Router()
 
@@ -153,6 +154,75 @@ function canReadIncident(profile, incident) {
 
 function canUpdateIncidentStatus(profile, incident) {
   return canReadIncident(profile, incident) && (isCompanyAdmin(profile.role) || isSchoolAdmin(profile.role))
+}
+
+// Deletion reasons are stored as a code so the audit trail stays analysable
+// instead of becoming a free-text dump.
+const DELETION_REASON_CODES = ['duplicate', 'test_or_drill', 'logged_in_error', 'wrong_school', 'other']
+
+const MAX_DELETION_REASON_LENGTH = 500
+
+const DELETE_INELIGIBLE_MESSAGE =
+  'Only test alerts, resolved incidents, and overdue incidents that nobody has acknowledged can be deleted.'
+
+const DELETE_NOT_PERMITTED_MESSAGE =
+  'School Admins can only delete test alerts they raised themselves.'
+
+function isOwnIncident(profile, incident) {
+  if (profile.uid && incident.triggeredById) {
+    return incident.triggeredById === profile.uid
+  }
+
+  if (profile.email && incident.triggeredByEmail) {
+    return String(incident.triggeredByEmail).toLowerCase() === String(profile.email).toLowerCase()
+  }
+
+  return false
+}
+
+// Who may remove a record at all, before considering its state:
+//   Company Admin: anything, at any school.
+//   School Admin: only test alerts they raised themselves, so a school
+//     cannot quietly erase genuine incident records of its own. School
+//     Admins are the ones who run drills, so this still lets them clear
+//     up after themselves.
+function canRoleDeleteIncident(profile, incident) {
+  if (isCompanyAdmin(profile.role)) return true
+  if (!isSchoolAdmin(profile.role)) return false
+
+  return incident.isTest === true && isOwnIncident(profile, incident)
+}
+
+function incidentAgeMinutes(incident) {
+  const raw = incident.createdAt
+  if (!raw) return 0
+
+  const created = raw.toDate ? raw.toDate() : new Date(raw)
+  if (Number.isNaN(created.getTime())) return 0
+
+  return Math.floor((Date.now() - created.getTime()) / 60000)
+}
+
+// What may be removed, and why:
+//   - a drill, which carries no genuine record value;
+//   - a resolved incident, whose response has finished;
+//   - an abandoned one: still triggered, nobody acknowledged it, and already
+//     past the overdue threshold the dashboard flags it with. Nothing is
+//     responding to it, so no response record is destroyed.
+//
+// Everything else is a live response. Deleting one of those would pull the
+// record out from under the people working it, and the email acknowledgement
+// link writes back into the incident document (see routes/notifications.js).
+function canDeleteIncident(incident, overdueThresholdMinutes) {
+  if (incident.isTest === true) return true
+  if (incident.status === 'resolved') return true
+
+  if (incident.status !== 'triggered') return false
+
+  const acknowledged = Array.isArray(incident.acknowledgedBy) && incident.acknowledgedBy.length > 0
+  if (acknowledged) return false
+
+  return incidentAgeMinutes(incident) > overdueThresholdMinutes
 }
 
 function appendUniqueActor(list, profile, timestamp, timeField) {
@@ -561,6 +631,96 @@ router.post('/:id/review-comment', verifyToken, async (req, res, next) => {
     const updatedIncident = docToObject(updatedDoc)
     invalidateIncidentListCache()
     res.json({ success: true, incident: toIncidentResponse(updatedIncident) })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// DELETE /api/incidents/:id
+// Company Admins may delete any incident. School Admins may only delete test
+// alerts they raised themselves, so a school cannot quietly erase genuine
+// records of its own. Staff cannot delete at all: a reporter must not be able
+// to erase their own report.
+//
+// This is a soft delete. The record is copied into deletedIncidents with who
+// deleted it, when and why, then removed from incidents. This is the same move
+// the archiver performs for aged out incidents. Deleted records are not
+// readable through the app.
+router.delete('/:id', verifyToken, async (req, res, next) => {
+  try {
+    const profile = await getUserProfile(req.user)
+
+    if (!isCompanyAdmin(profile.role) && !isSchoolAdmin(profile.role)) {
+      return res.status(403).json({ error: 'Only admins can delete incidents.' })
+    }
+
+    const db = getDb()
+    const docRef = db.collection('incidents').doc(req.params.id)
+    const doc = await docRef.get()
+    const incident = docToObject(doc)
+
+    if (!incident) {
+      return res.status(404).json({ error: 'Incident not found.' })
+    }
+
+    // Reused so a School Admin is held to their own school here exactly as
+    // they are everywhere else in this file.
+    if (!canReadIncident(profile, incident)) {
+      return res.status(403).json({ error: 'You do not have permission to delete this incident.' })
+    }
+
+    if (!canRoleDeleteIncident(profile, incident)) {
+      return res.status(403).json({ error: DELETE_NOT_PERMITTED_MESSAGE })
+    }
+
+    // Resolved per-school so the gate matches the "Overdue" badge the user sees.
+    const overdueThresholdMinutes = await getEffectiveOverdueThresholdMinutes(incident.schoolId)
+
+    if (!canDeleteIncident(incident, overdueThresholdMinutes)) {
+      return res.status(409).json({ error: DELETE_INELIGIBLE_MESSAGE })
+    }
+
+    const { reasonCode, reason } = req.body || {}
+
+    if (!DELETION_REASON_CODES.includes(reasonCode)) {
+      return res.status(400).json({ error: 'A valid deletion reason is required.' })
+    }
+
+    const detail = typeof reason === 'string' ? reason.trim() : ''
+
+    if (reasonCode === 'other' && !detail) {
+      return res.status(400).json({ error: 'Please describe the reason for deleting this incident.' })
+    }
+
+    if (detail.length > MAX_DELETION_REASON_LENGTH) {
+      return res.status(400).json({ error: `Reason must be ${MAX_DELETION_REASON_LENGTH} characters or fewer.` })
+    }
+
+    const now = new Date().toISOString()
+    const batch = db.batch()
+
+    batch.set(db.collection('deletedIncidents').doc(doc.id), {
+      ...doc.data(),
+      deletedAt: now,
+      deletionReasonCode: reasonCode,
+      deletionReason: detail,
+      deletedBy: {
+        uid: profile.uid || null,
+        name: profile.name || null,
+        email: profile.email || null,
+        role: profile.role || null,
+      },
+    })
+    batch.delete(docRef)
+
+    await batch.commit()
+
+    // Without these the incident keeps showing in the list and in dashboard
+    // counts, which are both served from caches.
+    invalidateIncidentListCache()
+    invalidateAnalyticsCache()
+
+    res.json({ success: true, id: doc.id })
   } catch (error) {
     next(error)
   }
