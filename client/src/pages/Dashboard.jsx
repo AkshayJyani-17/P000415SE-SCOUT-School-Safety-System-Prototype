@@ -350,7 +350,14 @@ export default function Dashboard() {
             />
           </div>
 
-          <QuickViewStrip incidents={dashboardIncidents} />
+          <QuickViewStrip
+          incidents={dashboardIncidents}
+          schoolName={
+            selectedSchool === 'all'
+              ? 'All Schools'
+              : schools.find(s => s.id === selectedSchool)?.name || 'Selected School'
+            }
+          />
         </>
       )}
 
@@ -388,6 +395,17 @@ export default function Dashboard() {
               </span>
             )}
           </div>
+
+
+          <p className="text-xs text-gray-600 mb-3">
+            Source: Incident records · Category: Triggered alerts
+            {isCompanyAdmin ? ' · Selected school' : ' · Your school'}
+            {' · '}
+            Metric: Alerts awaiting acknowledgement.
+            Overdue means the alert has exceeded the configured
+            acknowledgement threshold.
+          </p>
+
 
           <div className="space-y-2">
             {unacked.map((incident) => {
@@ -520,6 +538,12 @@ export default function Dashboard() {
             </button>
           </div>
         </div>
+        <p className="text-xs text-gray-600 mb-3">
+          Source: Incident records · Category: Today's non-triggered incidents
+          {isCompanyAdmin ? ' · Selected school' : ' · Your school'}
+          {' · '}
+          Sorted by the selected order.
+        </p>
 
         <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100 overflow-hidden">
           {recentToShow.length === 0 ? (
@@ -588,6 +612,29 @@ export default function Dashboard() {
         </div>
       </div>
       )}
+
+      <section
+        aria-label="Dashboard legend"
+        className="mt-6 rounded-lg border border-gray-200 bg-white p-4"
+      >
+        <h2 className="text-sm font-semibold text-gray-900 mb-2">
+          Dashboard Legend
+        </h2>
+
+        <p className="text-xs text-gray-600">
+          <strong>Triggered:</strong> Awaiting acknowledgement ·{' '}
+          <strong>Acknowledged:</strong> Alert acknowledged ·{' '}
+          <strong>In progress:</strong> Response underway ·{' '}
+          <strong>Resolved:</strong> Incident resolved ·{' '}
+          <strong>Archived:</strong> Incident archived
+        </p>
+
+        <p className="text-xs text-gray-600 mt-2">
+          <strong>Critical / High / Medium / Low:</strong> Incident priority levels.
+          {' '}<strong>TEST:</strong> Test incident, not a live emergency.
+        </p>
+      </section>
+
 
       {incidentToDelete && (
         <DeleteIncidentDialog
