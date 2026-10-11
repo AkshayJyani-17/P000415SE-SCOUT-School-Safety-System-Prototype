@@ -185,4 +185,23 @@ describe('SCRUM-28 - Incident School Filter', () => {
       expect(screen.getByText(/3 active incidents/i)).toBeInTheDocument()
     })
   })
+
+
+    test('sorts incidents alphabetically by school when All Schools is selected', async () => {
+        renderIncidents()
+
+        await screen.findByText('Alpha Fire Alert')
+
+        const alpha = screen.getByText('Alpha Fire Alert')
+        const beta = screen.getByText('Beta Medical Alert')
+        const gamma = screen.getByText('Gamma Lockdown Alert')
+
+        expect(
+            alpha.compareDocumentPosition(beta) & Node.DOCUMENT_POSITION_FOLLOWING
+        ).toBeTruthy()
+
+        expect(
+            beta.compareDocumentPosition(gamma) & Node.DOCUMENT_POSITION_FOLLOWING
+        ).toBeTruthy()
+    })
 })

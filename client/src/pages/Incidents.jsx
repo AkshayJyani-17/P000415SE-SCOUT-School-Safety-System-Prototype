@@ -291,8 +291,15 @@ export default function Incidents() {
       const matchDateRange = isWithinDateRange(incident, filterDateRange)
 
       return matchStatus && matchPriority && matchSchool && matchSearch && matchDateRange
-    })
-  }, [filterDateRange, filterPriority, filterSchool, filterStatus, incidents, isArchivedView, isCompanyAdmin, search])
+      }).sort((a, b) => {
+        if (!isCompanyAdmin || filterSchool !== 'all') return 0
+
+        const schoolA = schoolOptions.find(s => s.id === a.schoolId)?.name || a.schoolName || ''
+        const schoolB = schoolOptions.find(s => s.id === b.schoolId)?.name || b.schoolName || ''
+
+       return schoolA.localeCompare(schoolB)
+      })
+  }, [filterDateRange, filterPriority, filterSchool, filterStatus, incidents, isArchivedView, isCompanyAdmin, search, schoolOptions])
 
   const activeCount = useMemo(
     () => filtered.filter(incident => ACTIVE_STATUSES.includes(incident.status)).length,
