@@ -291,12 +291,19 @@ export default function Incidents() {
       const matchDateRange = isWithinDateRange(incident, filterDateRange)
 
       return matchStatus && matchPriority && matchSchool && matchSearch && matchDateRange
-    })
-  }, [filterDateRange, filterPriority, filterSchool, filterStatus, incidents, isArchivedView, isCompanyAdmin, search])
+      }).sort((a, b) => {
+        if (!isCompanyAdmin || filterSchool !== 'all') return 0
+
+        const schoolA = schoolOptions.find(s => s.id === a.schoolId)?.name || a.schoolName || ''
+        const schoolB = schoolOptions.find(s => s.id === b.schoolId)?.name || b.schoolName || ''
+
+       return schoolA.localeCompare(schoolB)
+      })
+  }, [filterDateRange, filterPriority, filterSchool, filterStatus, incidents, isArchivedView, isCompanyAdmin, search, schoolOptions])
 
   const activeCount = useMemo(
-    () => incidents.filter(incident => ACTIVE_STATUSES.includes(incident.status)).length,
-    [incidents]
+    () => filtered.filter(incident => ACTIVE_STATUSES.includes(incident.status)).length,
+    [filtered]
   )
 
   const subtitleText = isArchivedView
@@ -325,6 +332,18 @@ export default function Incidents() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Incident Log</h1>
           <p className="text-sm text-gray-500">{subtitleText}</p>
+
+          {isCompanyAdmin && (
+          <p className="text-xs text-gray-500 mt-1">
+          Showing incidents from:{' '}
+          <span className="font-semibold text-gray-700">
+          {filterSchool === 'all'
+          ? 'All Schools'
+          : schoolOptions.find(school => school.id === filterSchool)?.name || 'Selected School'}
+          </span>
+          </p>
+        )}
+
           {isSchoolAdmin && !isCompanyAdmin && (
             <p className="text-xs text-gray-400 mt-1">
               Monitor and review incidents within your school, including status, response progress, and repeated patterns.
@@ -409,6 +428,7 @@ export default function Incidents() {
         </select>
         {isCompanyAdmin && (
           <select
+            aria-label="School"
             value={filterSchool}
             onChange={event => setFilterSchool(event.target.value)}
             className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
