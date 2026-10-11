@@ -7,4 +7,8 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  test: {
+    // Repairs the localStorage global before any test runs. See the file.
+    setupFiles: ['./src/tests/setup.js'],
+  },
 })
