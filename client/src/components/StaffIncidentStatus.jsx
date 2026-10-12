@@ -23,6 +23,31 @@ export default function StaffIncidentStatus({ incidents, connection }) {
         </p>
       </div>
       <p className="text-sm text-gray-600 mb-3">{active.length} active · All active incidents and your 10 most recent completed incidents.</p>
+      <div className="mb-3 space-y-1 text-xs text-gray-600">
+      <p>
+        Source: Incident records · Category: Active and completed incidents
+      </p>
+
+      <p>
+        Metric: {active.length} incidents are currently active
+        (not resolved or archived).
+      </p>
+
+      <p>
+        Display: All active incidents and up to 10 most recent
+        resolved or archived incidents.
+      </p>
+
+      <span
+        tabIndex={0}
+        title="Incident updates arrive through a live server connection. If disconnected, the system attempts to reconnect after 5 seconds."
+        aria-label="Data refresh information: Live incident updates arrive through a server connection. If disconnected, reconnection is attempted after 5 seconds."
+        className="inline-block cursor-help"
+      >
+        ⓘ Refresh information
+      </span>
+    </div>
+
       {!sorted.length && <p className="p-5 bg-white border rounded-xl text-sm text-gray-600">
         {connection === 'error' ? 'Unable to load incident status. Retrying automatically…' : 'No incidents to track yet.'}
       </p>}
