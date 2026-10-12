@@ -160,3 +160,5 @@ git merge main
 - The safest habit is: `pull main` first, then create or update your feature branch.
 - Merge `main` into your branch before merging to `main`, not after.
 - Keep commits focused so conflicts are easier to resolve.
+
+
