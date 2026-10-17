@@ -129,11 +129,34 @@ describe('Deleting from the incident list', () => {
     expect(deleteButton('INC-0007')).toBeInTheDocument()
   })
 
-  test('a live incident offers no delete action', async () => {
+  test('a live incident also offers the delete action to an admin', async () => {
+    // SCRUM-43. The icon used to be hidden here, using whichever threshold
+    // this page had loaded. The server used the incident's own school, so the
+    // icon could be missing when the delete would have worked, or shown when
+    // it would not. The dialog warns about a live response instead.
     await renderList()
 
     expect(deleteButton('INC-0007')).toBeEnabled()
-    expect(screen.queryByRole('button', { name: /delete inc-0008/i })).not.toBeInTheDocument()
+    expect(deleteButton('INC-0008')).toBeEnabled()
+  })
+
+  test('the dialog warns when staff at that school may still be responding', async () => {
+    mockIncidents = [{
+      ...LIVE,
+      responseWindow: { windowMinutes: 60, ageMinutes: 5, responseMayBeUnderway: true },
+    }]
+    render(
+      <MemoryRouter>
+        <Incidents />
+      </MemoryRouter>
+    )
+    await screen.findByText(/fire alarm sounding/i)
+
+    fireEvent.click(deleteButton('INC-0008'))
+    const dialog = within(await screen.findByRole('dialog'))
+
+    expect(dialog.getByText(/Alpha High allows 60 minutes to respond/i)).toBeInTheDocument()
+    expect(dialog.getByRole('button', { name: /^delete incident$/i })).toBeDisabled()
   })
 
   test('an overdue alert nobody acknowledged is deletable from the list', async () => {

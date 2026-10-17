@@ -18,6 +18,11 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
   // be cleared whenever a test swaps in a fresh database.
   require('../src/schoolCache').resetSchoolCache()
 
+  // GET /api/incidents caches its list the same way, for 30 seconds, keyed by
+  // role and school. Without clearing it one test can be served the previous
+  // test's incidents.
+  require('../src/incidentListCache').invalidateIncidentListCache()
+
   const incidentStore = new Map(Object.entries(incidents).map(([id, value]) => [id, { ...value }]))
   const deletedIncidentStore = new Map(Object.entries(deletedIncidents).map(([id, value]) => [id, { ...value }]))
   // The delete rule resolves the overdue threshold the same way GET /settings
@@ -70,6 +75,13 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
           },
           async get() {
             return { docs: [...incidentStore.entries()].map(([id, record]) => makeDoc(id, record)) }
+          },
+          // GET /api/incidents/stream subscribes instead of fetching, through
+          // watchIncidents. Firing once with the current contents is enough to
+          // test what the stream sends.
+          onSnapshot(onNext) {
+            onNext({ docs: [...incidentStore.entries()].map(([id, record]) => makeDoc(id, record)) })
+            return () => {}
           },
           doc(id) {
             return {
@@ -954,8 +966,13 @@ test('DELETE /api/incidents/:id deletes a test alert whatever its status', async
 
 const minutesAgo = minutes => new Date(Date.now() - minutes * 60 * 1000).toISOString()
 
+// SCRUM-43. These four used to expect a 409. The time check that produced it
+// also lived on the screen, reading a different school's setting, so the screen
+// offered deletes this endpoint then refused. Nothing here judges how recent an
+// alert is any more. The screen warns from the responseWindow field instead and
+// asks the admin to tick a box, which cannot fall out of step with the server.
 for (const liveStatus of ['acknowledged', 'in-progress']) {
-  test(`DELETE /api/incidents/:id returns 409 for a live ${liveStatus} incident`, async () => {
+  test(`DELETE /api/incidents/:id lets a Company Admin delete a live ${liveStatus} incident`, async () => {
     fakeDb = deletableDb({
       liveIncident: {
         title: 'Live emergency',
@@ -967,15 +984,15 @@ for (const liveStatus of ['acknowledged', 'in-progress']) {
 
     await withServer(createApp(), async baseUrl => {
       const response = await deleteRequest(baseUrl, 'liveIncident', 'company-token')
-      assert.equal(response.status, 409)
-      // A live incident must survive untouched so responders keep seeing it.
-      assert.equal(fakeDb.stores.incidents.has('liveIncident'), true)
-      assert.equal(fakeDb.stores.deletedIncidents.size, 0)
+      assert.equal(response.status, 200)
+      assert.equal(fakeDb.stores.incidents.has('liveIncident'), false)
+      // The audit copy is what protects the response record now, not a refusal.
+      assert.equal(fakeDb.stores.deletedIncidents.has('liveIncident'), true)
     })
   })
 }
 
-test('DELETE /api/incidents/:id returns 409 for an alert still inside the overdue window', async () => {
+test('DELETE /api/incidents/:id deletes an alert still inside the overdue window', async () => {
   fakeDb = deletableDb({
     freshAlert: {
       title: 'Just triggered',
@@ -987,9 +1004,8 @@ test('DELETE /api/incidents/:id returns 409 for an alert still inside the overdu
 
   await withServer(createApp(), async baseUrl => {
     const response = await deleteRequest(baseUrl, 'freshAlert', 'company-token')
-    assert.equal(response.status, 409)
-    // Dispatch may still be in flight, so this one is protected.
-    assert.equal(fakeDb.stores.incidents.has('freshAlert'), true)
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('freshAlert'), false)
   })
 })
 
@@ -1011,7 +1027,7 @@ test('DELETE /api/incidents/:id deletes an overdue alert nobody acknowledged', a
   })
 })
 
-test('DELETE /api/incidents/:id returns 409 for an overdue alert someone acknowledged', async () => {
+test('DELETE /api/incidents/:id deletes an overdue alert someone acknowledged', async () => {
   fakeDb = deletableDb({
     answered: {
       title: 'Overdue but answered',
@@ -1024,17 +1040,22 @@ test('DELETE /api/incidents/:id returns 409 for an overdue alert someone acknowl
 
   await withServer(createApp(), async baseUrl => {
     const response = await deleteRequest(baseUrl, 'answered', 'company-token')
-    assert.equal(response.status, 409)
-    // Someone responded, so the record of that response is protected.
-    assert.equal(fakeDb.stores.incidents.has('answered'), true)
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('answered'), false)
+    // The acknowledgement is kept with the audit copy, not lost.
+    assert.equal(
+      fakeDb.stores.deletedIncidents.get('answered').acknowledgedBy[0].name,
+      'Riley Principal'
+    )
   })
 })
 
-test('DELETE /api/incidents/:id honours a school overdue threshold override', async () => {
+test('DELETE /api/incidents/:id no longer refuses because of a school threshold override', async () => {
   fakeDb = createTestDb({
     users: DELETE_USERS,
-    // The company default of 15 minutes would make this deletable; the school
-    // override of 24 hours must win, exactly as GET /settings resolves it.
+    // This school allows 24 hours, so the old rule refused a two hour old
+    // alert. The screen meanwhile compared it against the company default of
+    // 15 minutes and offered the delete anyway, which is the bug.
     settings: { 'settings/global': { overdueThresholdMinutes: 15 } },
     schoolSettings: { school_alpha: { overdueThresholdMinutes: 1440 } },
     incidents: {
@@ -1049,8 +1070,180 @@ test('DELETE /api/incidents/:id honours a school overdue threshold override', as
 
   await withServer(createApp(), async baseUrl => {
     const response = await deleteRequest(baseUrl, 'recentForSchool', 'company-token')
-    assert.equal(response.status, 409)
-    assert.equal(fakeDb.stores.incidents.has('recentForSchool'), true)
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('recentForSchool'), false)
+  })
+})
+
+// SCRUM-43. The screen used to work the response window out itself, from
+// whichever threshold its own page had loaded. These pin down that the server
+// now sends it, using each incident's own school, so the screen has nothing
+// left to get wrong.
+
+function windowDb(incidents) {
+  return createTestDb({
+    users: DELETE_USERS,
+    settings: { 'settings/global': { overdueThresholdMinutes: 15 } },
+    schoolSettings: { school_alpha: { overdueThresholdMinutes: 60 } },
+    incidents,
+  })
+}
+
+async function fetchIncidents(baseUrl) {
+  const response = await fetch(`${baseUrl}/api/incidents`, {
+    headers: { Authorization: 'Bearer company-token' },
+  })
+
+  return (await response.json()).incidents
+}
+
+test('GET /api/incidents sends each school its own response window', async () => {
+  fakeDb = windowDb({
+    atAlpha: {
+      title: 'Alpha alert',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(30),
+    },
+    atBeta: {
+      title: 'Beta alert',
+      status: 'triggered',
+      schoolId: 'school_beta',
+      createdAt: minutesAgo(30),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const incidents = await fetchIncidents(baseUrl)
+    const alpha = incidents.find(incident => incident.id === 'atAlpha')
+    const beta = incidents.find(incident => incident.id === 'atBeta')
+
+    // Alpha allows 60 minutes, so a 30 minute old alert is still inside it.
+    assert.equal(alpha.responseWindow.windowMinutes, 60)
+    assert.equal(alpha.responseWindow.responseMayBeUnderway, true)
+
+    // Beta has no override, so the company default of 15 minutes applies and
+    // the same age is outside the window.
+    assert.equal(beta.responseWindow.windowMinutes, 15)
+    assert.equal(beta.responseWindow.responseMayBeUnderway, false)
+  })
+})
+
+test('GET /api/incidents reports how old each alert is', async () => {
+  fakeDb = windowDb({
+    atAlpha: {
+      title: 'Alpha alert',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(30),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const [incident] = await fetchIncidents(baseUrl)
+    assert.equal(incident.responseWindow.ageMinutes, 30)
+  })
+})
+
+test('GET /api/incidents never says a drill has a response underway', async () => {
+  fakeDb = windowDb({
+    drill: {
+      title: 'Lockdown drill',
+      status: 'triggered',
+      isTest: true,
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(5),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const [incident] = await fetchIncidents(baseUrl)
+
+    // It is well inside the window, but nobody is responding to a drill.
+    assert.equal(incident.responseWindow.windowMinutes, 60)
+    assert.equal(incident.responseWindow.responseMayBeUnderway, false)
+  })
+})
+
+test('GET /api/incidents never says a resolved alert has a response underway', async () => {
+  fakeDb = windowDb({
+    done: {
+      title: 'Dealt with',
+      status: 'resolved',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(5),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const [incident] = await fetchIncidents(baseUrl)
+    assert.equal(incident.responseWindow.responseMayBeUnderway, false)
+  })
+})
+
+// The dashboard replaces its incidents with whatever the stream pushes, so a
+// stream payload without a response window leaves the delete dialog there with
+// nothing to warn from. The first version of this fix missed that.
+test('GET /api/incidents/stream sends the response window too', async () => {
+  fakeDb = windowDb({
+    atAlpha: {
+      title: 'Alpha alert',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(30),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const controller = new AbortController()
+
+    const response = await fetch(`${baseUrl}/api/incidents/stream`, {
+      headers: { Authorization: 'Bearer company-token' },
+      signal: controller.signal,
+    })
+
+    const reader = response.body.getReader()
+    let buffered = ''
+    let payload = null
+
+    // Read until the first data frame arrives, past any keepalive comments.
+    while (payload === null) {
+      const { value, done } = await reader.read()
+      if (done) break
+
+      buffered += Buffer.from(value).toString('utf8')
+      const match = buffered.match(/^data: (.*)$/m)
+      if (match) payload = JSON.parse(match[1])
+    }
+
+    controller.abort()
+
+    const [incident] = payload.incidents
+    assert.equal(incident.responseWindow.windowMinutes, 60)
+    assert.equal(incident.responseWindow.ageMinutes, 30)
+    assert.equal(incident.responseWindow.responseMayBeUnderway, true)
+  })
+})
+
+test('GET /api/incidents/:id sends the response window for the school that owns it', async () => {
+  fakeDb = windowDb({
+    atAlpha: {
+      title: 'Alpha alert',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(30),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await fetch(`${baseUrl}/api/incidents/atAlpha`, {
+      headers: { Authorization: 'Bearer company-token' },
+    })
+    const { incident } = await response.json()
+
+    assert.equal(incident.responseWindow.windowMinutes, 60)
+    assert.equal(incident.responseWindow.ageMinutes, 30)
+    assert.equal(incident.responseWindow.responseMayBeUnderway, true)
   })
 })
 

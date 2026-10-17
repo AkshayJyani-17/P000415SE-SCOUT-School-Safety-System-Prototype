@@ -487,7 +487,6 @@ export default function Dashboard() {
                   <DeleteIncidentButton
                     incident={incident}
                     viewer={deleteViewer}
-                    overdueThresholdMinutes={overdueThresholdMinutes}
                     onRequestDelete={setIncidentToDelete}
                   />
                 </div>
@@ -599,7 +598,6 @@ export default function Dashboard() {
                 <DeleteIncidentButton
                   incident={incident}
                   viewer={deleteViewer}
-                  overdueThresholdMinutes={overdueThresholdMinutes}
                   onRequestDelete={setIncidentToDelete}
                 />
 

@@ -1,22 +1,24 @@
 import { Trash2 } from 'lucide-react'
-import { canDeleteIncident } from './incidentDeletion'
+import { canRoleDeleteIncident } from './incidentDeletion'
 
 /**
  * Row-level delete icon for an incident in a list.
  *
- * Renders nothing unless this viewer may delete this particular incident,
- * which keeps the common "active incidents" views free of a column of
- * disabled icons. The incident detail page explains the rule for anyone
- * looking for the action.
+ * Renders nothing unless this viewer's role lets them delete this particular
+ * incident, which keeps lists free of a column of disabled icons.
  *
  * The viewer prop carries the role flags plus uid and email, because a
  * School Admin may only delete test alerts they raised themselves.
  *
+ * How recent the alert is does not decide whether the icon appears. The
+ * dialog warns about that instead, so this icon can no longer offer a delete
+ * the server refuses.
+ *
  * List rows open the incident when clicked, so the press is stopped from
  * bubbling up to the row.
  */
-export default function DeleteIncidentButton({ incident, viewer, overdueThresholdMinutes, onRequestDelete }) {
-  if (!canDeleteIncident(incident, viewer, overdueThresholdMinutes)) return null
+export default function DeleteIncidentButton({ incident, viewer, onRequestDelete }) {
+  if (!canRoleDeleteIncident(incident, viewer)) return null
 
   return (
     <button

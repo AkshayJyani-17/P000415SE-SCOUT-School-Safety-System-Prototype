@@ -11,44 +11,8 @@ export const DELETION_REASONS = [
   { code: 'other', label: 'Other (please describe)' },
 ]
 
-export const DELETE_INELIGIBLE_MESSAGE =
-  'This incident has a response underway. It can be deleted once it is resolved, or once it is overdue with nobody having acknowledged it.'
-
-// Matches DEFAULT_OVERDUE_THRESHOLD_MINUTES on the server.
-const DEFAULT_OVERDUE_THRESHOLD_MINUTES = 15
-
-function elapsedMinutes(incident) {
-  const raw = incident.createdAt
-  if (!raw) return 0
-
-  const created = new Date(raw)
-  if (Number.isNaN(created.getTime())) return 0
-
-  return Math.floor((Date.now() - created.getTime()) / 60000)
-}
-
-// What may be deleted, and why:
-//   - a drill, which carries no genuine record value;
-//   - a resolved incident, whose response has finished;
-//   - an abandoned one: still triggered, nobody acknowledged it, and already
-//     past the overdue threshold the UI flags it with. Nothing is responding
-//     to it, so no response record is destroyed.
-//
-// Everything else is a live response and stays protected, including an alert
-// that only just fired and may still be going out.
-//
-// The backend enforces the same rule; this only keeps the UI honest, so the
-// threshold must be the effective per-school one the pages already load.
-export function isIncidentDeletable(incident, overdueThresholdMinutes = DEFAULT_OVERDUE_THRESHOLD_MINUTES) {
-  if (!incident) return false
-  if (incident.isTest) return true
-  if (incident.status === 'resolved') return true
-
-  if (incident.status !== 'triggered') return false
-  if (Array.isArray(incident.acknowledgedBy) && incident.acknowledgedBy.length > 0) return false
-
-  return elapsedMinutes(incident) > overdueThresholdMinutes
-}
+export const RESPONSE_UNDERWAY_CONFIRMATION =
+  'I understand staff may still be responding'
 
 // Narrows the auth context down to just what the delete rule needs.
 export function deleteViewerFrom(auth = {}) {
@@ -72,12 +36,17 @@ function isOwnIncident(incident, viewer) {
   return false
 }
 
-// Who may remove a record at all, before its state is considered:
+// Who may delete a record:
 //   Company Admin: anything, at any school.
 //   School Admin: only test alerts they raised themselves, so a school
 //     cannot quietly erase genuine incident records of its own. School
 //     Admins run the drills, so they can still clear up after themselves.
 // The backend enforces the same rule; this only keeps the UI honest.
+//
+// There is deliberately no check on how old the incident is. That check used
+// to live here and on the server, reading different settings, so this file
+// could offer a delete the server then refused. How recent the alert is now
+// only produces a warning, see buildResponseWarning below.
 export function canRoleDeleteIncident(incident, viewer = {}) {
   if (!incident) return false
   if (viewer.isCompanyAdmin) return true
@@ -86,6 +55,28 @@ export function canRoleDeleteIncident(incident, viewer = {}) {
   return Boolean(incident.isTest) && isOwnIncident(incident, viewer)
 }
 
-export function canDeleteIncident(incident, viewer = {}, overdueThresholdMinutes = DEFAULT_OVERDUE_THRESHOLD_MINUTES) {
-  return canRoleDeleteIncident(incident, viewer) && isIncidentDeletable(incident, overdueThresholdMinutes)
+// The sentence shown in the delete dialog when staff at the incident's own
+// school may still be working on the alert, or null when there is nothing to
+// warn about.
+//
+// Every judgement here comes from responseWindow, which the server sends with
+// the incident. Nothing is recalculated, because doing the same sum in two
+// places using two different settings is what caused this bug.
+export function buildResponseWarning(incident) {
+  const window = incident?.responseWindow
+
+  if (!window || !window.responseMayBeUnderway) return null
+
+  const school = incident.schoolName || 'This school'
+  const minutes = Number(window.windowMinutes)
+  const age = Number(window.ageMinutes)
+
+  if (!Number.isFinite(minutes) || !Number.isFinite(age)) return null
+
+  const ageText = age < 1
+    ? 'less than a minute old'
+    : `${age} ${age === 1 ? 'minute' : 'minutes'} old`
+
+  return `${school} allows ${minutes} ${minutes === 1 ? 'minute' : 'minutes'} to respond` +
+    ` and this alert is ${ageText}. Staff there may still be working on it.`
 }

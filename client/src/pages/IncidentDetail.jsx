@@ -5,8 +5,6 @@ import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
 import {
   canRoleDeleteIncident,
   deleteViewerFrom,
-  isIncidentDeletable,
-  DELETE_INELIGIBLE_MESSAGE,
 } from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 
@@ -752,23 +750,18 @@ export default function IncidentDetail() {
       {canRoleDeleteIncident({ ...found, status }, deleteViewer) && (
         <div className="mt-6 border-t border-gray-200 pt-5">
           <h2 className="text-sm font-semibold text-gray-700 mb-1">Delete this incident</h2>
-          {isIncidentDeletable({ ...found, status }, overdueThresholdMinutes) ? (
-            <>
-              <p className="text-xs text-gray-500 mb-3">
-                Removes the incident from the incident log, dashboard counts and analytics. A copy is
-                kept for audit but cannot be restored from the app.
-              </p>
-              <button
-                type="button"
-                onClick={() => setShowDeleteDialog(true)}
-                className="px-4 py-2 border border-red-300 text-red-700 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors"
-              >
-                Delete Incident
-              </button>
-            </>
-          ) : (
-            <p className="text-xs text-gray-500">{DELETE_INELIGIBLE_MESSAGE}</p>
-          )}
+          <p className="text-xs text-gray-500 mb-3">
+            Removes the incident from the incident log, dashboard counts and analytics. A copy is
+            kept for audit but cannot be restored from the app. If staff may still be responding,
+            the confirmation box says so before anything is deleted.
+          </p>
+          <button
+            type="button"
+            onClick={() => setShowDeleteDialog(true)}
+            className="px-4 py-2 border border-red-300 text-red-700 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors"
+          >
+            Delete Incident
+          </button>
         </div>
       )}
 

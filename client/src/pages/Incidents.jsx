@@ -574,7 +574,6 @@ export default function Incidents() {
                   <DeleteIncidentButton
                     incident={incident}
                     viewer={deleteViewer}
-                    overdueThresholdMinutes={overdueThresholdMinutes}
                     onRequestDelete={setIncidentToDelete}
                   />
                   <span className="text-gray-400">&gt;</span>
