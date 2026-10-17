@@ -363,9 +363,26 @@ router.get('/stream', verifyToken, async (req, res, next) => {
     res.flushHeaders()
     heartbeat = setInterval(() => res.write(': keepalive\n\n'), 15000)
     renewal = setTimeout(close, 60000)
-    unsubscribe = watchIncidents(getDb(), profile, records => {
+    // The dashboard replaces its incidents with whatever this stream pushes, so
+    // the response window has to be sent here too. Without it the delete dialog
+    // on the dashboard has nothing to warn from.
+    let latestSnapshot = 0
+
+    unsubscribe = watchIncidents(getDb(), profile, async records => {
       if (closed) return
-      const incidents = records.sort((a, b) => getSortValue(b) - getSortValue(a)).map(toIncidentResponse)
+
+      // Each push is a whole snapshot, so a slow settings lookup must not let
+      // an older snapshot land after a newer one.
+      const snapshotNumber = ++latestSnapshot
+      const responseWindows = await buildResponseWindows(records)
+      if (closed || snapshotNumber !== latestSnapshot) return
+
+      const incidents = records
+        .sort((a, b) => getSortValue(b) - getSortValue(a))
+        .map(incident => toIncidentResponse(
+          incident,
+          buildResponseWindow(incident, responseWindows.get(incident.schoolId || null))
+        ))
       res.write(`data: ${JSON.stringify({ incidents })}\n\n`)
     }, close)
     if (closed) unsubscribe()

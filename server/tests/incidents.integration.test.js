@@ -76,6 +76,13 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
           async get() {
             return { docs: [...incidentStore.entries()].map(([id, record]) => makeDoc(id, record)) }
           },
+          // GET /api/incidents/stream subscribes instead of fetching, through
+          // watchIncidents. Firing once with the current contents is enough to
+          // test what the stream sends.
+          onSnapshot(onNext) {
+            onNext({ docs: [...incidentStore.entries()].map(([id, record]) => makeDoc(id, record)) })
+            return () => {}
+          },
           doc(id) {
             return {
               id,
@@ -1171,6 +1178,50 @@ test('GET /api/incidents never says a resolved alert has a response underway', a
   await withServer(createApp(), async baseUrl => {
     const [incident] = await fetchIncidents(baseUrl)
     assert.equal(incident.responseWindow.responseMayBeUnderway, false)
+  })
+})
+
+// The dashboard replaces its incidents with whatever the stream pushes, so a
+// stream payload without a response window leaves the delete dialog there with
+// nothing to warn from. The first version of this fix missed that.
+test('GET /api/incidents/stream sends the response window too', async () => {
+  fakeDb = windowDb({
+    atAlpha: {
+      title: 'Alpha alert',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(30),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const controller = new AbortController()
+
+    const response = await fetch(`${baseUrl}/api/incidents/stream`, {
+      headers: { Authorization: 'Bearer company-token' },
+      signal: controller.signal,
+    })
+
+    const reader = response.body.getReader()
+    let buffered = ''
+    let payload = null
+
+    // Read until the first data frame arrives, past any keepalive comments.
+    while (payload === null) {
+      const { value, done } = await reader.read()
+      if (done) break
+
+      buffered += Buffer.from(value).toString('utf8')
+      const match = buffered.match(/^data: (.*)$/m)
+      if (match) payload = JSON.parse(match[1])
+    }
+
+    controller.abort()
+
+    const [incident] = payload.incidents
+    assert.equal(incident.responseWindow.windowMinutes, 60)
+    assert.equal(incident.responseWindow.ageMinutes, 30)
+    assert.equal(incident.responseWindow.responseMayBeUnderway, true)
   })
 })
 

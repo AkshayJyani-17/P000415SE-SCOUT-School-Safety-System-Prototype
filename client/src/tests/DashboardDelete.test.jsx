@@ -262,3 +262,52 @@ describe('Deleting from the dashboard', () => {
     expect(screen.getByText(/duplicate fire report/i)).toBeInTheDocument()
   })
 })
+
+// SCRUM-43. The warning has to work from the dashboard too, not only from the
+// Incidents page, because both open the same dialog.
+describe('Deleting from the dashboard while staff may be responding', () => {
+  test('the dialog warns and holds the delete back until the box is ticked', async () => {
+    mockIncidents = [{
+      ...ACKNOWLEDGED,
+      schoolName: 'Alpha High',
+      responseWindow: { windowMinutes: 60, ageMinutes: 5, responseMayBeUnderway: true },
+    }]
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    )
+    await screen.findByText(/medical response underway/i)
+
+    fireEvent.click(deleteButton('INC-0008'))
+    const dialog = within(await screen.findByRole('dialog'))
+
+    expect(dialog.getByText(/Alpha High allows 60 minutes to respond/i)).toBeInTheDocument()
+
+    const confirm = dialog.getByRole('button', { name: /^delete incident$/i })
+    fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'logged_in_error' } })
+    expect(confirm).toBeDisabled()
+
+    fireEvent.click(dialog.getByLabelText(/i understand staff may still be responding/i))
+    expect(confirm).toBeEnabled()
+  })
+
+  test('a resolved incident gets no warning on the dashboard', async () => {
+    // The server never reports a response underway for a resolved incident,
+    // so this is the shape the dashboard actually receives for one.
+    mockIncidents = [{
+      ...RESOLVED,
+      responseWindow: { windowMinutes: 60, ageMinutes: 5, responseMayBeUnderway: false },
+    }]
+    await renderDashboard()
+
+    fireEvent.click(deleteButton('INC-0007'))
+    const dialog = within(await screen.findByRole('dialog'))
+
+    expect(dialog.queryByText(/may still be working on it/i)).not.toBeInTheDocument()
+
+    fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'duplicate' } })
+    expect(dialog.getByRole('button', { name: /^delete incident$/i })).toBeEnabled()
+  })
+})
