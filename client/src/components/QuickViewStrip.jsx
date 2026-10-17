@@ -2,13 +2,43 @@
 const REFRESH_DESCRIPTION =
   'Incident data is fetched when the dashboard opens. Reload the page to fetch the latest data.'
 
+const TEST_ALERT_NOTE =
+  'Test alerts are left out of this number, to match how Analytics reports them.'
+
+function isActive(incident) {
+  return incident.status !== 'archived' && incident.status !== 'resolved'
+}
+
+function isCreatedToday(incident) {
+  if (!incident.createdAt) return false
+
+  const incidentDate = new Date(incident.createdAt)
+  if (Number.isNaN(incidentDate.getTime())) return false
+
+  return incidentDate.toDateString() === new Date().toDateString()
+}
+
+// Drills are still worth seeing, they just must not be added into the headline
+// number. Without this an admin who runs a drill sees nothing change at all and
+// cannot tell whether it worked.
+function testAlertCountNote(count) {
+  if (!count) return null
+
+  return `Plus ${count} test ${count === 1 ? 'alert' : 'alerts'}, not counted`
+}
+
 export default function QuickViewStrip({
   incidents,
   schoolName = 'All Schools',
 }) {
-  const active = incidents.filter(
-    i => i.status !== 'archived' && i.status !== 'resolved'
-  )
+  // Alerts sent from the Alert Testing page carry isTest. Analytics already
+  // leaves them out of its figures, through excludeTestIncidents in
+  // server/src/analyticsCache.js, so these counts have to do the same or the
+  // two screens report different numbers for the same day.
+  const realIncidents = incidents.filter(i => i.isTest !== true)
+  const testIncidents = incidents.filter(i => i.isTest === true)
+
+  const active = realIncidents.filter(isActive)
 
   const unacked = active.filter(
     i => i.status === 'triggered'
@@ -18,22 +48,20 @@ export default function QuickViewStrip({
     i => i.priority === 'critical'
   ).length
 
-  const incidentsToday = incidents.filter(i => {
-    if (!i.createdAt) return false
+  const incidentsToday = realIncidents.filter(isCreatedToday).length
 
-    const incidentDate = new Date(i.createdAt)
-    if (Number.isNaN(incidentDate.getTime())) return false
-
-    return incidentDate.toDateString() === new Date().toDateString()
-  }).length
+  const activeTests = testIncidents.filter(isActive)
+  const unackedTests = activeTests.filter(i => i.status === 'triggered').length
+  const testsToday = testIncidents.filter(isCreatedToday).length
 
   const cards = [
     {
       title: 'Active Incidents',
       count: active.length,
       detail: `${critical} critical`,
+      testNote: testAlertCountNote(activeTests.length),
       explanation:
-        'Incidents that have not been resolved or archived. Critical incidents are those marked with critical priority.',
+        `Incidents that have not been resolved or archived. Critical incidents are those marked with critical priority. ${TEST_ALERT_NOTE}`,
       color: 'from-red-50 to-red-100 border-red-200',
       textColor: 'text-red-700',
     },
@@ -41,8 +69,9 @@ export default function QuickViewStrip({
       title: 'Unacknowledged',
       count: unacked,
       detail: 'Awaiting acknowledgement',
+      testNote: testAlertCountNote(unackedTests),
       explanation:
-        'Active incidents with triggered status that are waiting to be acknowledged.',
+        `Active incidents with triggered status that are waiting to be acknowledged. ${TEST_ALERT_NOTE}`,
       color: 'from-orange-50 to-orange-100 border-orange-200',
       textColor: 'text-orange-700',
     },
@@ -50,8 +79,9 @@ export default function QuickViewStrip({
       title: 'Incidents Created Today',
       count: incidentsToday,
       detail: 'New incident records today',
+      testNote: testAlertCountNote(testsToday),
       explanation:
-        'Number of incident records created today, based on their creation date.',
+        `Number of incident records created today, based on their creation date. ${TEST_ALERT_NOTE}`,
       color: 'from-blue-50 to-blue-100 border-blue-200',
       textColor: 'text-blue-700',
     },
@@ -109,6 +139,12 @@ export default function QuickViewStrip({
             <p className={`text-xs mt-1 ${card.textColor}`}>
               {card.detail}
             </p>
+
+            {card.testNote && (
+              <p className="text-xs text-amber-700 mt-1">
+                {card.testNote}
+              </p>
+            )}
 
             <p className="text-xs text-gray-600 mt-2">
               Source: Incident records
