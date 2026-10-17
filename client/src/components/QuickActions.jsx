@@ -164,6 +164,9 @@ export default function QuickActions() {
       })
       return incident
     } catch (err) {
+      // The alert still has to go out even if the record cannot be saved, so
+      // this does not rethrow. Returning null tells the caller the alert was
+      // not saved, and the confirmation says so.
       console.error('Failed to create incident record:', err)
       return null
     }
@@ -508,7 +511,7 @@ export default function QuickActions() {
         </div>
       )}
 
-      {showResult?.incident && (
+      {showResult && (
         <AlertConfirmation
           incident={showResult.incident}
           delivery={showResult.delivery}
