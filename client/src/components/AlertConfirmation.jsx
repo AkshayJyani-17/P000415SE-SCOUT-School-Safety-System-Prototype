@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 
 // Counts how many recipients the backend actually reached. The notification
@@ -95,6 +96,43 @@ export default function AlertConfirmation({
   onDismiss,
   dismissLabel = 'Done',
 }) {
+  const dialogRef = useRef(null)
+
+  // Keeps Tab inside the dialog. Without this the buttons on the page behind
+  // stay reachable, which is how the same alert could be submitted twice.
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+
+    const listFocusable = () =>
+      [...dialog.querySelectorAll('button, a[href], input, select, textarea')]
+
+    const firstOnOpen = listFocusable()[0]
+    if (firstOnOpen) firstOnOpen.focus()
+
+    const handleKeyDown = event => {
+      if (event.key !== 'Tab') return
+
+      const items = listFocusable()
+      if (items.length === 0) return
+
+      const first = items[0]
+      const last = items[items.length - 1]
+
+      // Wrap around at either end so focus never leaves the dialog.
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    dialog.addEventListener('keydown', handleKeyDown)
+    return () => dialog.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
   // The emergency path can send an alert and still fail to save the incident,
   // so a missing incident is a real case. Only render nothing when there is
   // genuinely nothing to report.
@@ -122,6 +160,7 @@ export default function AlertConfirmation({
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       role="dialog"
       aria-modal="true"

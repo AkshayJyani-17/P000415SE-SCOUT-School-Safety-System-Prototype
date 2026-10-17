@@ -112,7 +112,9 @@ export default function SubmitAlert() {
   }
 
   const handleSubmit = async () => {
-    if (isSubmitting || !isPreviewing) return
+    // "submitted" is checked as well, otherwise pressing the button again
+    // after the confirmation appears would save the same alert twice.
+    if (isSubmitting || !isPreviewing || submitted) return
     setIsSubmitting(true)
     try {
       const createdIncident = await incidentAPI.create({
@@ -170,7 +172,7 @@ export default function SubmitAlert() {
           <button type="button" onClick={() => { setIsPreviewing(false); setErrors({}) }} className="flex-1 py-3 border rounded-lg">Edit alert</button>
           <button type="button" onClick={() => navigate('/dashboard')} className="flex-1 py-3 border rounded-lg">Cancel</button>
         </div>
-        <button type="button" onClick={handleSubmit} disabled={isSubmitting} className="w-full py-3 bg-red-600 text-white font-medium rounded-lg disabled:opacity-50">{isSubmitting ? 'Submitting...' : 'Confirm and submit alert'}</button>
+        <button type="button" onClick={handleSubmit} disabled={isSubmitting || Boolean(submitted)} className="w-full py-3 bg-red-600 text-white font-medium rounded-lg disabled:opacity-50">{isSubmitting ? 'Submitting...' : 'Confirm and submit alert'}</button>
       </div>
 
       {submitted && (
