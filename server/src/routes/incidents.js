@@ -2,6 +2,7 @@ const express = require('express')
 const admin = require('firebase-admin')
 const { docToObject, formatTimestamp, getDb, snapshotToArray } = require('../db/firebase')
 const { getSchoolName } = require('../services/schoolService')
+const { findSchoolRoutingRule } = require('../services/alertRouting')
 const { invalidateAnalyticsCache } = require('../analyticsCache')
 const {
   getCachedIncidentList,
@@ -418,10 +419,9 @@ router.get('/preview/recipients', verifyToken, async (req, res, next) => {
     if (!schoolId || !type) return res.status(400).json({ error: 'School and alert type are required.' })
 
     const db = getDb()
-    const snapshot = await db.collection('notificationRouting').where('schoolId', '==', schoolId).get()
-    const rule = snapshot.docs.map(doc => doc.data()).find(item =>
-      item.active !== false && String(item.alertType || '').toLowerCase().replace(/\s+/g, '_') === type.toLowerCase()
-    )
+    // Shared with the real send, so the preview cannot promise people the
+    // send would never reach. See services/alertRouting.js.
+    const rule = await findSchoolRoutingRule(db, schoolId, type)
     let recipients = []
     if (rule && Array.isArray(rule.recipients)) {
       recipients = rule.recipients.filter(item => item.email || item.phone)
