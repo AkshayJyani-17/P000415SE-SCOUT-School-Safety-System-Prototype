@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { incidentAPI } from '../api/client'
-import { DELETION_REASONS } from './incidentDeletion'
+import {
+  DELETION_REASONS,
+  RESPONSE_UNDERWAY_CONFIRMATION,
+  buildResponseWarning,
+} from './incidentDeletion'
 
 /**
  * Confirmation dialog for deleting an incident. Shared by the incident list
@@ -13,6 +17,7 @@ export default function DeleteIncidentDialog({ incident, onCancel, onDeleted }) 
   const [detail, setDetail] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [deleted, setDeleted] = useState(false)
+  const [understood, setUnderstood] = useState(false)
   const [error, setError] = useState('')
 
   // The incident list payload carries acknowledgedBy but not notifications, so
@@ -20,7 +25,17 @@ export default function DeleteIncidentDialog({ incident, onCancel, onDeleted }) 
   const acknowledgedCount = Array.isArray(incident.acknowledgedBy) ? incident.acknowledgedBy.length : 0
   const notifiedCount = Array.isArray(incident.notifications) ? incident.notifications.length : 0
 
-  const confirmable = Boolean(reasonCode) && (reasonCode !== 'other' || detail.trim().length > 0)
+  // Null unless staff at the incident's own school may still be working on the
+  // alert. The server works this out and sends it with the incident, so this
+  // dialog never has to guess at a school's response time.
+  const responseWarning = buildResponseWarning(incident)
+
+  // An extra tick, not an extra rule. Nothing here can refuse the delete, so
+  // it cannot disagree with the server the way the old time check did.
+  const confirmable =
+    Boolean(reasonCode) &&
+    (reasonCode !== 'other' || detail.trim().length > 0) &&
+    (!responseWarning || understood)
 
   const incidentLabel = `${incident.type} · ${incident.incidentNumber || incident.id}`
 
@@ -106,6 +121,24 @@ export default function DeleteIncidentDialog({ incident, onCancel, onDeleted }) 
             alert. Deleting removes that record from the log.
           </p>
         ) : null}
+
+        {responseWarning && (
+          <div className="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 mb-3">
+            <p className="font-medium mb-1.5">
+              <span aria-hidden="true">⚠️</span> {responseWarning}
+            </p>
+
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={understood}
+                onChange={event => setUnderstood(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>{RESPONSE_UNDERWAY_CONFIRMATION}</span>
+            </label>
+          </div>
+        )}
 
         <label htmlFor="delete-reason-code" className="block text-xs font-medium text-gray-600 mb-1">
           Reason for deleting <span className="text-red-500">*</span>

@@ -162,9 +162,6 @@ const DELETION_REASON_CODES = ['duplicate', 'test_or_drill', 'logged_in_error', 
 
 const MAX_DELETION_REASON_LENGTH = 500
 
-const DELETE_INELIGIBLE_MESSAGE =
-  'Only test alerts, resolved incidents, and overdue incidents that nobody has acknowledged can be deleted.'
-
 const DELETE_NOT_PERMITTED_MESSAGE =
   'School Admins can only delete test alerts they raised themselves.'
 
@@ -203,26 +200,46 @@ function incidentAgeMinutes(incident) {
   return Math.floor((Date.now() - created.getTime()) / 60000)
 }
 
-// What may be removed, and why:
-//   - a drill, which carries no genuine record value;
-//   - a resolved incident, whose response has finished;
-//   - an abandoned one: still triggered, nobody acknowledged it, and already
-//     past the overdue threshold the dashboard flags it with. Nothing is
-//     responding to it, so no response record is destroyed.
+// How long the incident's own school allows for a response, and whether this
+// incident is still inside that time.
 //
-// Everything else is a live response. Deleting one of those would pull the
-// record out from under the people working it, and the email acknowledgement
-// link writes back into the incident document (see routes/notifications.js).
-function canDeleteIncident(incident, overdueThresholdMinutes) {
-  if (incident.isTest === true) return true
-  if (incident.status === 'resolved') return true
+// This sum used to be done on the screen as well, using whichever threshold
+// the viewer's own page had loaded, while here it used the incident's school.
+// The two could disagree about the same incident, so the screen offered a
+// delete the server then refused. It is now worked out here only, where each
+// school's setting is actually known, and sent out with the incident.
+//
+// It no longer decides anything. An admin may delete any incident their role
+// allows. The screen uses this to warn them first.
+function buildResponseWindow(incident, windowMinutes) {
+  const ageMinutes = incidentAgeMinutes(incident)
 
-  if (incident.status !== 'triggered') return false
+  return {
+    windowMinutes,
+    ageMinutes,
+    // Nobody is working on a drill, a resolved incident or an archived one, so
+    // in those cases there is nothing to warn about.
+    responseMayBeUnderway:
+      incident.isTest !== true &&
+      incident.status !== 'resolved' &&
+      incident.status !== 'archived' &&
+      ageMinutes <= windowMinutes,
+  }
+}
 
-  const acknowledged = Array.isArray(incident.acknowledgedBy) && incident.acknowledgedBy.length > 0
-  if (acknowledged) return false
+// One settings lookup per school rather than one per incident, because a
+// company wide list can hold hundreds of incidents across a few schools.
+async function buildResponseWindows(incidents) {
+  const schoolIds = [...new Set(incidents.map(incident => incident.schoolId || null))]
 
-  return incidentAgeMinutes(incident) > overdueThresholdMinutes
+  const entries = await Promise.all(
+    schoolIds.map(async schoolId => [
+      schoolId,
+      await getEffectiveOverdueThresholdMinutes(schoolId),
+    ])
+  )
+
+  return new Map(entries)
 }
 
 function appendUniqueActor(list, profile, timestamp, timeField) {
@@ -265,7 +282,7 @@ function toIsoTimestamp(value) {
 }
 
 //converts a raw Firestore incident into the response shape used by the frontend
-function toIncidentResponse(incident) {
+function toIncidentResponse(incident, responseWindow = null) {
   return {
     id: String(incident.id),
     incidentNumber: incident.incidentNumber || null,
@@ -287,6 +304,9 @@ function toIncidentResponse(incident) {
     assignedUserEmails: Array.isArray(incident.assignedUserEmails) ? incident.assignedUserEmails : [],
     description: incident.description || '',
     isTest: incident.isTest === true,
+    // See buildResponseWindow. Null on the paths that never open a delete
+    // dialog, such as the archived list and the create response.
+    responseWindow,
     acknowledgedBy: incident.acknowledgedBy || [],  // ← added
     inProgressBy: incident.inProgressBy || [],
     notifications: [],
@@ -305,10 +325,15 @@ router.get('/', verifyToken, async (req, res, next) => {
       setCachedIncidentList(profile, visibleIncidents)
     }
 
+    const responseWindows = await buildResponseWindows(visibleIncidents)
+
     //sorts incidents from newest to oldest based on createdAt, updatedAt, or timestamp and converts to response format
     const incidents = visibleIncidents
       .sort((left, right) => getSortValue(right) - getSortValue(left))
-      .map(toIncidentResponse)
+      .map(incident => toIncidentResponse(
+        incident,
+        buildResponseWindow(incident, responseWindows.get(incident.schoolId || null))
+      ))
     //sends the result back as JSON
     res.json({ incidents })
   } catch (error) {
@@ -396,10 +421,12 @@ router.get('/:id', verifyToken, async (req, res, next) => {
       sms: notification.sms || notification.smsStatus || 'pending',      // ← fixed
       email: notification.email || notification.emailStatus || 'pending', // ← fixed
     }))
+    const windowMinutes = await getEffectiveOverdueThresholdMinutes(incident.schoolId)
+
     //returns the incident details
     res.json({
       incident: {
-        ...toIncidentResponse(incident),
+        ...toIncidentResponse(incident, buildResponseWindow(incident, windowMinutes)),
         notifications,
       },
     })
@@ -673,13 +700,11 @@ router.delete('/:id', verifyToken, async (req, res, next) => {
       return res.status(403).json({ error: DELETE_NOT_PERMITTED_MESSAGE })
     }
 
-    // Resolved per-school so the gate matches the "Overdue" badge the user sees.
-    const overdueThresholdMinutes = await getEffectiveOverdueThresholdMinutes(incident.schoolId)
-
-    if (!canDeleteIncident(incident, overdueThresholdMinutes)) {
-      return res.status(409).json({ error: DELETE_INELIGIBLE_MESSAGE })
-    }
-
+    // There is deliberately no time check here. One used to sit here and
+    // another on the screen, reading different settings, so the screen offered
+    // deletes this endpoint then refused with a 409. The screen now warns from
+    // the response window sent with the incident and asks the admin to
+    // confirm, which cannot fall out of step with anything.
     const { reasonCode, reason } = req.body || {}
 
     if (!DELETION_REASON_CODES.includes(reasonCode)) {

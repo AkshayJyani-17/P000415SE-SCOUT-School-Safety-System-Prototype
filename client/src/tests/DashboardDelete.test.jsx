@@ -137,9 +137,13 @@ describe('Deleting from the dashboard', () => {
     expect(deleteButton('INC-0007')).toBeInTheDocument()
   })
 
-  test('an incident still being responded to offers no delete icon', async () => {
+  test('an incident still being responded to also offers the delete icon', async () => {
+    // SCRUM-43. The icon used to be hidden here, using whichever threshold the
+    // dashboard had loaded, while the server used the incident's own school.
+    // The two could disagree about the same row. The dialog warns about a live
+    // response instead of the icon quietly disappearing.
     await renderDashboard()
-    expect(screen.queryByRole('button', { name: /delete inc-0008/i })).not.toBeInTheDocument()
+    expect(deleteButton('INC-0008')).toBeInTheDocument()
   })
 
   test('an unacknowledged test drill can be cleared from the dashboard', async () => {

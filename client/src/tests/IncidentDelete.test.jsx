@@ -74,6 +74,15 @@ const STAFF = {
   isAdmin: false,
 }
 
+// SCRUM-43. The server sends responseWindow with every incident, worked out
+// from the incident's own school. This page never calculates it, so the
+// fixtures carry it the way the real payload does.
+const RESPONSE_UNDERWAY = {
+  windowMinutes: 60,
+  ageMinutes: 30,
+  responseMayBeUnderway: true,
+}
+
 // A drill raised by the School Admin, the only thing that role may delete.
 const OWN_DRILL = {
   ...RESOLVED_INCIDENT,
@@ -115,12 +124,21 @@ describe('Incident deletion: availability', () => {
     expect(screen.getByRole('button', { name: /^delete incident$/i })).toBeInTheDocument()
   })
 
-  test('a freshly triggered incident cannot be deleted and explains why', async () => {
-    mockIncident = { ...RESOLVED_INCIDENT, status: 'triggered', acknowledgedBy: [] }
+  test('a freshly triggered incident still offers the delete action', async () => {
+    // SCRUM-43. This used to be hidden, using a threshold this page loaded for
+    // itself while the server used the incident's own school. The two could
+    // disagree, so the action was sometimes hidden when the delete would have
+    // worked and sometimes offered when it would not. How recent the alert is
+    // now only produces a warning inside the dialog.
+    mockIncident = {
+      ...RESOLVED_INCIDENT,
+      status: 'triggered',
+      acknowledgedBy: [],
+      responseWindow: RESPONSE_UNDERWAY,
+    }
     await renderPage()
 
-    expect(screen.queryByRole('button', { name: /^delete incident$/i })).not.toBeInTheDocument()
-    expect(screen.getByText(/can be deleted once it is resolved/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^delete incident$/i })).toBeInTheDocument()
   })
 
   test('an overdue incident nobody acknowledged can be deleted', async () => {
@@ -136,7 +154,7 @@ describe('Incident deletion: availability', () => {
     expect(screen.getByRole('button', { name: /^delete incident$/i })).toBeInTheDocument()
   })
 
-  test('an overdue incident someone acknowledged stays protected', async () => {
+  test('an overdue incident someone acknowledged still offers the delete action', async () => {
     mockIncident = {
       ...RESOLVED_INCIDENT,
       status: 'triggered',
@@ -145,7 +163,10 @@ describe('Incident deletion: availability', () => {
     }
     await renderPage()
 
-    expect(screen.queryByRole('button', { name: /^delete incident$/i })).not.toBeInTheDocument()
+    // The dialog still says somebody acknowledged it, which is the warning
+    // that matters here. Hiding the action instead left an admin with no way
+    // to clear a record logged by mistake.
+    expect(screen.getByRole('button', { name: /^delete incident$/i })).toBeInTheDocument()
   })
 
   test('a test alert can be deleted even while still triggered', async () => {
@@ -271,14 +292,125 @@ describe('Incident deletion: removal', () => {
   })
 
   test('a rejected delete surfaces the backend message and keeps the dialog open', async () => {
-    mockRemove.mockRejectedValueOnce(new Error('Only test alerts, resolved incidents, and overdue incidents that nobody has acknowledged can be deleted.'))
+    // A role refusal, which is the only thing the server refuses a delete for
+    // now that the time check has gone.
+    mockRemove.mockRejectedValueOnce(new Error('School Admins can only delete test alerts they raised themselves.'))
     const dialog = await openDialog()
 
     fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'duplicate' } })
     fireEvent.click(dialog.getByRole('button', { name: /^delete incident$/i }))
 
-    expect(await dialog.findByText(/overdue incidents that nobody has acknowledged/i)).toBeInTheDocument()
+    expect(await dialog.findByText(/only delete test alerts they raised themselves/i)).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(mockNavigate).not.toHaveBeenCalled()
+  })
+})
+
+// SCRUM-43. The warning replaces the old block. Nothing here can refuse the
+// delete, so the screen and the server have nothing left to disagree about.
+describe('Incident deletion: staff may still be responding', () => {
+  async function openDialogFor(responseWindow) {
+    mockIncident = { ...RESOLVED_INCIDENT, status: 'triggered', acknowledgedBy: [], responseWindow }
+    return openDialog()
+  }
+
+  test('the dialog names the school and the response time', async () => {
+    const dialog = await openDialogFor(RESPONSE_UNDERWAY)
+
+    expect(
+      dialog.getByText(/Alpha High allows 60 minutes to respond and this alert is 30 minutes old/i)
+    ).toBeInTheDocument()
+    expect(dialog.getByText(/staff there may still be working on it/i)).toBeInTheDocument()
+  })
+
+  test('deleting is held back until the box is ticked', async () => {
+    const dialog = await openDialogFor(RESPONSE_UNDERWAY)
+    const confirm = dialog.getByRole('button', { name: /^delete incident$/i })
+
+    fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'logged_in_error' } })
+
+    // A reason alone is no longer enough while a response may be underway.
+    expect(confirm).toBeDisabled()
+
+    fireEvent.click(dialog.getByLabelText(/i understand staff may still be responding/i))
+    expect(confirm).toBeEnabled()
+  })
+
+  test('cancel stays usable the whole time', async () => {
+    const dialog = await openDialogFor(RESPONSE_UNDERWAY)
+
+    expect(dialog.getByRole('button', { name: /cancel/i })).toBeEnabled()
+  })
+
+  test('unticking the box holds the delete back again', async () => {
+    const dialog = await openDialogFor(RESPONSE_UNDERWAY)
+    const confirm = dialog.getByRole('button', { name: /^delete incident$/i })
+    const box = dialog.getByLabelText(/i understand staff may still be responding/i)
+
+    fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'logged_in_error' } })
+    fireEvent.click(box)
+    expect(confirm).toBeEnabled()
+
+    fireEvent.click(box)
+    expect(confirm).toBeDisabled()
+  })
+
+  test('the delete goes through once the box is ticked', async () => {
+    const dialog = await openDialogFor(RESPONSE_UNDERWAY)
+
+    fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'logged_in_error' } })
+    fireEvent.click(dialog.getByLabelText(/i understand staff may still be responding/i))
+    fireEvent.click(dialog.getByRole('button', { name: /^delete incident$/i }))
+
+    await waitFor(() => expect(mockRemove).toHaveBeenCalledWith('1', {
+      reasonCode: 'logged_in_error',
+      reason: '',
+    }))
+  })
+
+  test('no warning and no box when the response time has passed', async () => {
+    const dialog = await openDialogFor({
+      windowMinutes: 15,
+      ageMinutes: 60,
+      responseMayBeUnderway: false,
+    })
+
+    expect(dialog.queryByText(/may still be working on it/i)).not.toBeInTheDocument()
+    expect(dialog.queryByLabelText(/i understand staff may still be responding/i)).not.toBeInTheDocument()
+
+    // A reason on its own is enough again.
+    fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'duplicate' } })
+    expect(dialog.getByRole('button', { name: /^delete incident$/i })).toBeEnabled()
+  })
+
+  test('no warning when the server sent no response window at all', async () => {
+    const dialog = await openDialogFor(undefined)
+
+    expect(dialog.queryByText(/may still be working on it/i)).not.toBeInTheDocument()
+
+    fireEvent.change(dialog.getByLabelText(/reason for deleting/i), { target: { value: 'duplicate' } })
+    expect(dialog.getByRole('button', { name: /^delete incident$/i })).toBeEnabled()
+  })
+
+  test('the warning uses the singular for a one minute window', async () => {
+    const dialog = await openDialogFor({
+      windowMinutes: 1,
+      ageMinutes: 1,
+      responseMayBeUnderway: true,
+    })
+
+    expect(
+      dialog.getByText(/allows 1 minute to respond and this alert is 1 minute old/i)
+    ).toBeInTheDocument()
+  })
+
+  test('the warning copes with an alert raised seconds ago', async () => {
+    const dialog = await openDialogFor({
+      windowMinutes: 15,
+      ageMinutes: 0,
+      responseMayBeUnderway: true,
+    })
+
+    expect(dialog.getByText(/this alert is less than a minute old/i)).toBeInTheDocument()
   })
 })
