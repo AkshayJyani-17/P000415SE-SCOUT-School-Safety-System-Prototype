@@ -9,6 +9,7 @@ const { getDb } = require('../db/firebase')
 const { invalidateAnalyticsCache } = require('../analyticsCache')
 const { invalidateIncidentListCache } = require('../incidentListCache')
 const { getSchoolName } = require('../services/schoolService')
+const { findSchoolRoutingRule } = require('../services/alertRouting')
 
 const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`
 
@@ -155,24 +156,17 @@ async function getRecipientsForEmergency(emergencyType, schoolId) {
   const db = getDb()
 
   if (schoolId) {
-    const schoolRouting = await db.collection('notificationRouting')
-      .where('schoolId', '==', schoolId)
-      .where('alertType', '==', emergencyType)
-      .where('active', '==', true)
-      .limit(1)
-      .get()
+    // Shared with the preview, so the two cannot disagree about which saved
+    // list applies. See services/alertRouting.js.
+    const rule = await findSchoolRoutingRule(db, schoolId, emergencyType)
 
-    if (!schoolRouting.empty) {
-      const rule = schoolRouting.docs[0].data()
+    if (rule && Array.isArray(rule.recipients)) {
+      const recipients = rule.recipients
+        .filter(recipient => recipient.email || recipient.phone)
+        .map(normaliseRecipient)
 
-      if (Array.isArray(rule.recipients)) {
-        const recipients = rule.recipients
-          .filter(recipient => recipient.email || recipient.phone)
-          .map(normaliseRecipient)
-
-        console.log(`School routing found for "${emergencyType}" at ${schoolId}: ${recipients.length} recipient(s)`)
-        return recipients
-      }
+      console.log(`School routing found for "${emergencyType}" at ${schoolId}: ${recipients.length} recipient(s)`)
+      return recipients
     }
   }
 

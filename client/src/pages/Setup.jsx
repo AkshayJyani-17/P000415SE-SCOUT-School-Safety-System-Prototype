@@ -9,6 +9,10 @@ const EMOJI_OPTIONS = ['🏥', '🔥', '🔒', '⚠️', '🌩️', '🔧', '�
 
 // School Admin routing rules are keyed by the alert type label, so options are
 // de-duplicated by label (case-insensitive) to keep one entry per routing rule.
+// The backend refuses two alert types with the same name, so this should
+// never find a duplicate in new data. It stays as a guard for anything saved
+// before that check existed, because the dropdown keys each option by name
+// and two options with the same key would break the list.
 function buildAlertTypeOptions(alertTypes) {
   const seen = new Set()
   const options = []

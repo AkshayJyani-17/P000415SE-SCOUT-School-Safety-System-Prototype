@@ -63,6 +63,8 @@ function createTestDb({
       },
       doc(id) {
         return {
+          id,
+          __store: store,
           async get() {
             return makeDoc(id, store.get(id))
           },
@@ -97,6 +99,30 @@ function createTestDb({
       if (name === 'users') return makeCollection(usersStore)
       throw new Error(`Unexpected collection: ${name}`)
     },
+    // Mirrors the small part of the Firestore batch API the routes use.
+    batch() {
+      const writes = []
+
+      return {
+        update(ref, data) {
+          writes.push(() => {
+            const existing = ref.__store.get(ref.id)
+            if (!existing) throw new Error('Document ' + ref.id + ' not found')
+            ref.__store.set(ref.id, { ...existing, ...data })
+          })
+        },
+        set(ref, data) {
+          writes.push(() => ref.__store.set(ref.id, { ...data }))
+        },
+        delete(ref) {
+          writes.push(() => ref.__store.delete(ref.id))
+        },
+        async commit() {
+          for (const apply of writes) apply()
+        },
+      }
+    },
+
     stores: {
       alertTypes: alertTypesStore,
       locations: locationsStore,
@@ -1108,5 +1134,224 @@ test('GET /api/setup/school-users returns 401 with no token', async () => {
   await withServer(createApp(), async baseUrl => {
     const res = await fetch(`${baseUrl}/api/setup/school-users`)
     assert.equal(res.status, 401)
+  })
+})
+// ── SCRUM-37: renaming an alert type must carry its recipient lists ─────────
+// Recipient lists are stored against the alert type's label. A rename used to
+// leave them behind, so the renamed type had nobody attached and alerts of
+// that type reached nobody.
+
+function renameDb(extraRouting = {}) {
+  return createTestDb({
+    users: { 'company-uid': COMPANY_USER },
+    alertTypes: {
+      'type-fire': { label: 'Fire', emoji: '🔥', category: 'emergency', active: true },
+    },
+    notificationRouting: {
+      'routing-alpha': {
+        schoolId: 'school_alpha',
+        alertType: 'Fire',
+        active: true,
+        recipients: [{ name: 'Fire Warden', email: 'warden@alpha.edu' }],
+      },
+      ...extraRouting,
+    },
+  })
+}
+
+function renameRequest(baseUrl, id, body) {
+  return fetch(`${baseUrl}/api/setup/alert-types/${id}`, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer company-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+test('PUT /api/setup/alert-types/:id moves the recipient list to the new label', async () => {
+  fakeDb = renameDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await renameRequest(baseUrl, 'type-fire', { label: 'Fire Emergency', emoji: '🔥' })
+    assert.equal(res.status, 200)
+
+    const routing = fakeDb.stores.routing.get('routing-alpha')
+    assert.equal(routing.alertType, 'Fire Emergency')
+    // The people configured for it must survive the rename.
+    assert.equal(routing.recipients.length, 1)
+    assert.equal(routing.recipients[0].email, 'warden@alpha.edu')
+  })
+})
+
+test('PUT /api/setup/alert-types/:id moves the list for every school', async () => {
+  fakeDb = renameDb({
+    'routing-beta': {
+      schoolId: 'school_beta',
+      alertType: 'Fire',
+      active: true,
+      recipients: [{ name: 'Beta Office', email: 'office@beta.edu' }],
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await renameRequest(baseUrl, 'type-fire', { label: 'Fire Emergency', emoji: '🔥' })
+    assert.equal(res.status, 200)
+
+    const payload = await res.json()
+    assert.equal(payload.routingUpdated, 2)
+
+    assert.equal(fakeDb.stores.routing.get('routing-alpha').alertType, 'Fire Emergency')
+    assert.equal(fakeDb.stores.routing.get('routing-beta').alertType, 'Fire Emergency')
+  })
+})
+
+test('PUT /api/setup/alert-types/:id handles a rename that only changes the case', async () => {
+  fakeDb = renameDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await renameRequest(baseUrl, 'type-fire', { label: 'FIRE', emoji: '🔥' })
+    assert.equal(res.status, 200)
+
+    // The send matches the label exactly, so a case change has to move too.
+    assert.equal(fakeDb.stores.routing.get('routing-alpha').alertType, 'FIRE')
+  })
+})
+
+test('PUT /api/setup/alert-types/:id leaves other alert types alone', async () => {
+  fakeDb = renameDb({
+    'routing-medical': {
+      schoolId: 'school_alpha',
+      alertType: 'Medical',
+      active: true,
+      recipients: [{ name: 'First Aider', email: 'aid@alpha.edu' }],
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    await renameRequest(baseUrl, 'type-fire', { label: 'Fire Emergency', emoji: '🔥' })
+
+    assert.equal(fakeDb.stores.routing.get('routing-medical').alertType, 'Medical')
+  })
+})
+
+test('PUT /api/setup/alert-types/:id touches no routing when the label is unchanged', async () => {
+  fakeDb = renameDb()
+
+  await withServer(createApp(), async baseUrl => {
+    // Editing only the emoji must not rewrite the recipient lists.
+    const res = await renameRequest(baseUrl, 'type-fire', { label: 'Fire', emoji: '🚒' })
+    assert.equal(res.status, 200)
+
+    const payload = await res.json()
+    assert.equal(payload.routingUpdated, 0)
+    assert.equal(fakeDb.stores.routing.get('routing-alpha').alertType, 'Fire')
+  })
+})
+
+// ── SCRUM-39: alert type names must be unique ───────────────────────────────
+// Two types with the same name could both exist. The dropdown hid one of them,
+// and because a school's recipient list is saved against the name, the hidden
+// one could never be given recipients of its own.
+
+function uniqueNameDb(alertTypes) {
+  return createTestDb({
+    users: { 'company-uid': COMPANY_USER },
+    alertTypes,
+  })
+}
+
+const FIRE_TYPE = { 'type-fire': { label: 'Fire', emoji: '🔥', category: 'emergency', active: true } }
+
+function createType(baseUrl, body) {
+  return fetch(`${baseUrl}/api/setup/alert-types`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer company-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+function renameType(baseUrl, id, body) {
+  return fetch(`${baseUrl}/api/setup/alert-types/${id}`, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer company-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+test('POST /api/setup/alert-types refuses a name that already exists', async () => {
+  fakeDb = uniqueNameDb(FIRE_TYPE)
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await createType(baseUrl, { label: 'Fire', category: 'emergency' })
+    assert.equal(res.status, 409)
+    assert.match((await res.json()).error, /already exists/i)
+    assert.equal(fakeDb.stores.alertTypes.size, 1)
+  })
+})
+
+test('POST /api/setup/alert-types refuses a name that differs only by capitals', async () => {
+  fakeDb = uniqueNameDb(FIRE_TYPE)
+
+  await withServer(createApp(), async baseUrl => {
+    // This is the bug. "fire" used to be accepted alongside "Fire", and then
+    // the dropdown hid one of them.
+    const res = await createType(baseUrl, { label: 'fire', category: 'emergency' })
+    assert.equal(res.status, 409)
+    assert.equal(fakeDb.stores.alertTypes.size, 1)
+  })
+})
+
+test('POST /api/setup/alert-types refuses a name that differs only by spacing', async () => {
+  fakeDb = uniqueNameDb({
+    'type-nd': { label: 'Natural Disaster', category: 'emergency', active: true },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await createType(baseUrl, { label: 'natural disaster', category: 'emergency' })
+    assert.equal(res.status, 409)
+  })
+})
+
+test('POST /api/setup/alert-types still accepts a genuinely new name', async () => {
+  fakeDb = uniqueNameDb(FIRE_TYPE)
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await createType(baseUrl, { label: 'Medical', category: 'general' })
+    assert.equal(res.status, 201)
+    assert.equal(fakeDb.stores.alertTypes.size, 2)
+  })
+})
+
+test('PUT /api/setup/alert-types/:id refuses a rename onto an existing name', async () => {
+  fakeDb = uniqueNameDb({
+    ...FIRE_TYPE,
+    'type-medical': { label: 'Medical', category: 'general', active: true },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await renameType(baseUrl, 'type-medical', { label: 'Fire' })
+    assert.equal(res.status, 409)
+    // The rename must not have gone through.
+    assert.equal(fakeDb.stores.alertTypes.get('type-medical').label, 'Medical')
+  })
+})
+
+test('PUT /api/setup/alert-types/:id lets a type keep its own name', async () => {
+  fakeDb = uniqueNameDb(FIRE_TYPE)
+
+  await withServer(createApp(), async baseUrl => {
+    // Editing only the emoji must not trip the duplicate check on itself.
+    const res = await renameType(baseUrl, 'type-fire', { label: 'Fire', emoji: '🚒' })
+    assert.equal(res.status, 200)
+    assert.equal(fakeDb.stores.alertTypes.get('type-fire').emoji, '🚒')
+  })
+})
+
+test('PUT /api/setup/alert-types/:id allows a change of capitals on its own name', async () => {
+  fakeDb = uniqueNameDb(FIRE_TYPE)
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await renameType(baseUrl, 'type-fire', { label: 'FIRE' })
+    assert.equal(res.status, 200)
+    assert.equal(fakeDb.stores.alertTypes.get('type-fire').label, 'FIRE')
   })
 })

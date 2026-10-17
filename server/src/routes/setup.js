@@ -1,6 +1,7 @@
 const express = require('express')
 const admin = require('firebase-admin')
 const { getDb, docToObject, snapshotToArray } = require('../db/firebase')
+const { alertTypeKey } = require('../services/alertRouting')
 
 const router = express.Router()
 
@@ -72,6 +73,23 @@ async function requireSchoolAdmin(req, res, next) {
 
 // ── Alert Types ───────────────────────────────────────────────────────────────
 
+// Two alert types cannot share a name. Each school saves its recipient list
+// against the name, so a second type with the same name could never be given
+// recipients of its own, and alerts of that type would reach nobody.
+//
+// Names are compared in the same normalised form the recipient lookup uses,
+// so "Fire" and "fire" count as the same name.
+async function findAlertTypeWithSameName(db, label, exceptId = null) {
+  const snapshot = await db.collection('alertTypes').get()
+  const wanted = alertTypeKey(label)
+
+  return (
+    snapshot.docs.find(
+      doc => doc.id !== exceptId && alertTypeKey(doc.data()?.label) === wanted
+    ) || null
+  )
+}
+
 // GET /api/setup/alert-types
 // Optional query param: ?category=emergency or ?category=general
 // Any authenticated user can read (SubmitAlert needs this)
@@ -106,10 +124,19 @@ router.post('/alert-types', verifyToken, requireCompanyAdmin, async (req, res, n
       return res.status(400).json({ error: 'Category must be emergency or general.' })
     }
 
-    const now = new Date().toISOString()
-    const value = label.trim().toLowerCase().replace(/\s+/g, '_')
+    const db = getDb()
 
-    const docRef = await getDb().collection('alertTypes').add({
+    const clash = await findAlertTypeWithSameName(db, label)
+    if (clash) {
+      return res.status(409).json({
+        error: `An alert type called "${clash.data().label}" already exists.`,
+      })
+    }
+
+    const now = new Date().toISOString()
+    const value = alertTypeKey(label)
+
+    const docRef = await db.collection('alertTypes').add({
       label: label.trim(),
       value,
       emoji: emoji?.trim() || '',
@@ -135,23 +162,59 @@ router.put('/alert-types/:id', verifyToken, requireCompanyAdmin, async (req, res
       return res.status(400).json({ error: 'Category must be emergency or general.' })
     }
 
-    const ref = getDb().collection('alertTypes').doc(req.params.id)
+    const db = getDb()
+    const ref = db.collection('alertTypes').doc(req.params.id)
     const doc = await ref.get()
     if (!doc.exists) return res.status(404).json({ error: 'Alert type not found.' })
 
+    const previousLabel = doc.data()?.label
+    const nextLabel = label.trim()
+
+    const clash = await findAlertTypeWithSameName(db, nextLabel, req.params.id)
+    if (clash) {
+      return res.status(409).json({
+        error: `An alert type called "${clash.data().label}" already exists.`,
+      })
+    }
+
+    const now = new Date().toISOString()
+
     const updateData = {
-      label: label.trim(),
+      label: nextLabel,
       emoji: emoji?.trim() || '',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
     }
 
     // Only update category if provided
     if (category) updateData.category = category
 
-    await ref.update(updateData)
+    // Each school's recipient list is stored against the alert type's label,
+    // so a rename has to move those lists across too. Without this the old
+    // list stays behind under the old label, the renamed type has nobody
+    // attached, and alerts of that type would reach nobody.
+    //
+    // The label and the lists are written in one batch, so a rename can never
+    // half happen and leave some schools with a list nothing looks for.
+    const renamed = previousLabel && previousLabel !== nextLabel
+
+    const affectedRouting = renamed
+      ? await db.collection('notificationRouting').where('alertType', '==', previousLabel).get()
+      : { docs: [] }
+
+    const batch = db.batch()
+    batch.update(ref, updateData)
+
+    for (const routingDoc of affectedRouting.docs) {
+      batch.update(db.collection('notificationRouting').doc(routingDoc.id), {
+        alertType: nextLabel,
+        updatedAt: now,
+      })
+    }
+
+    await batch.commit()
 
     const updated = await ref.get()
-    res.json({ alertType: docToObject(updated) })
+    res.json({ alertType: docToObject(updated), routingUpdated: affectedRouting.docs.length })
   } catch (err) {
     next(err)
   }
