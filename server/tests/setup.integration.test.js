@@ -1355,3 +1355,97 @@ test('PUT /api/setup/alert-types/:id allows a change of capitals on its own name
     assert.equal(fakeDb.stores.alertTypes.get('type-fire').label, 'FIRE')
   })
 })
+
+
+// SCRUM-44: Prevent duplicate location names
+
+function locationTestDb(locations) {
+  return createTestDb({
+    users: { 'company-uid': COMPANY_USER },
+    locations,
+  })
+}
+
+function createLocation(baseUrl, label) {
+  return fetch(`${baseUrl}/api/setup/locations`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer company-token',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ label }),
+  })
+}
+
+function renameLocation(baseUrl, id, label) {
+  return fetch(`${baseUrl}/api/setup/locations/${id}`, {
+    method: 'PUT',
+    headers: {
+      Authorization: 'Bearer company-token',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ label }),
+  })
+}
+
+test('SCRUM-44: POST rejects duplicate location names', async () => {
+  fakeDb = locationTestDb({
+    'loc-1': { label: 'Block A', active: true },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await createLocation(baseUrl, 'Block A')
+    assert.equal(res.status, 409)
+    assert.match((await res.json()).error, /already exists/i)
+    assert.equal(fakeDb.stores.locations.size, 1)
+  })
+})
+
+test('SCRUM-44: POST rejects different capitalisation and spaces', async () => {
+  fakeDb = locationTestDb({
+    'loc-1': { label: 'Block A', active: true },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await createLocation(baseUrl, '  block a  ')
+    assert.equal(res.status, 409)
+    assert.equal(fakeDb.stores.locations.size, 1)
+  })
+})
+
+test('SCRUM-44: POST accepts a new location name', async () => {
+  fakeDb = locationTestDb({
+    'loc-1': { label: 'Block A', active: true },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await createLocation(baseUrl, 'Block B')
+    assert.equal(res.status, 201)
+    assert.equal(fakeDb.stores.locations.size, 2)
+  })
+})
+
+test('SCRUM-44: PUT rejects renaming to an existing location', async () => {
+  fakeDb = locationTestDb({
+    'loc-1': { label: 'Block A', active: true },
+    'loc-2': { label: 'Block B', active: true },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await renameLocation(baseUrl, 'loc-2', 'block a')
+    assert.equal(res.status, 409)
+    assert.equal(fakeDb.stores.locations.get('loc-2').label, 'Block B')
+  })
+})
+
+test('SCRUM-44: PUT allows a location to keep its own name', async () => {
+  fakeDb = locationTestDb({
+    'loc-1': { label: 'Block A', active: true },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const res = await renameLocation(baseUrl, 'loc-1', 'Block A')
+    assert.equal(res.status, 200)
+    assert.equal(fakeDb.stores.locations.get('loc-1').label, 'Block A')
+  })
+})

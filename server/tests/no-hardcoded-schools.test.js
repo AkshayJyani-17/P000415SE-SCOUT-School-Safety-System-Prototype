@@ -40,12 +40,13 @@ function collectSourceFiles(directory, collected = []) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const fullPath = path.join(directory, entry.name)
 
-    if (entry.isDirectory()) {
-      if (entry.name === 'node_modules') continue
-      if (ALLOWED_DIRECTORIES.some(allowed => fullPath.startsWith(allowed))) continue
-      collectSourceFiles(fullPath, collected)
-      continue
-    }
+  if (entry.isDirectory()) {
+    if (entry.name === 'node_modules') continue
+    if (entry.name === 'tests' || entry.name === '__tests__') continue
+    if (ALLOWED_DIRECTORIES.some(allowed => fullPath.startsWith(allowed))) continue
+    collectSourceFiles(fullPath, collected)
+    continue
+}
 
     if (SCANNED_EXTENSIONS.includes(path.extname(entry.name))) {
       collected.push(fullPath)
