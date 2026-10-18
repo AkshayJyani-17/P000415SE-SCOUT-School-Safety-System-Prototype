@@ -14,6 +14,10 @@ export default function Notifications() {
   const { isCompanyAdmin, isSchoolAdmin, authLoading, userRole } = useAuth()
   const [filterChannel, setFilterChannel] = useState('all')
   const [filterStatus, setFilterStatus] = useState('all')
+  const [filterSchool, setFilterSchool] = useState('all')
+  const [filterType, setFilterType] = useState('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [notifications, setNotifications] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -56,7 +60,36 @@ export default function Notifications() {
   const smsFailed = visibleNotifications.filter(n => n.sms === 'failed').length
   const emailFailed = visibleNotifications.filter(n => n.email === 'failed').length
 
+  const schoolKey = n => n.schoolId ? `id:${n.schoolId}` : n.schoolName ? `name:${n.schoolName}` : 'unknown'
+  const schools = [...new Map(visibleNotifications.map(n => [schoolKey(n), n.schoolName || n.schoolId || 'Unknown school'])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]))
+  const typeKey = n => String(n.type || '').trim().toLowerCase() || 'unknown'
+  const types = [...new Set(visibleNotifications.map(typeKey))].sort()
+  const invalidDateRange = Boolean(dateFrom && dateTo && dateFrom > dateTo)
+  const activeFilters = [
+    isCompanyAdmin && filterSchool !== 'all' && `School: ${schools.find(([id]) => id === filterSchool)?.[1] || filterSchool}`,
+    filterType !== 'all' && `Type: ${filterType}`,
+    filterChannel !== 'all' && `Channel: ${filterChannel.toUpperCase()}`,
+    filterStatus !== 'all' && `Status: ${filterStatus}`,
+    dateFrom && `From: ${dateFrom}`,
+    dateTo && `To: ${dateTo}`,
+  ].filter(Boolean)
+
   const filtered = visibleNotifications.filter(n => {
+    if (invalidDateRange) return false
+    if (isCompanyAdmin && filterSchool !== 'all' && schoolKey(n) !== filterSchool) return false
+    if (filterType !== 'all' && typeKey(n) !== filterType) return false
+    if (dateFrom || dateTo) {
+      const date = n.timestamp ? new Date(n.timestamp) : null
+      if (!date || Number.isNaN(date.getTime())) return false
+      // Match the Sydney calendar date used by the delivery log, including both endpoints.
+      const parts = new Intl.DateTimeFormat('en-AU', {
+        timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).formatToParts(date)
+      const part = name => parts.find(p => p.type === name).value
+      const day = `${part('year')}-${part('month')}-${part('day')}`
+      if ((dateFrom && day < dateFrom) || (dateTo && day > dateTo)) return false
+    }
     if (filterChannel === 'sms') return filterStatus === 'all' || n.sms === filterStatus
     if (filterChannel === 'email') return filterStatus === 'all' || n.email === filterStatus
     if (filterStatus === 'all') return true
@@ -112,8 +145,25 @@ export default function Notifications() {
         </div>
       )}
 
-      <div className="flex gap-3 mb-4 flex-wrap">
+      <div className="flex gap-3 mb-4 flex-wrap items-end">
+        {isCompanyAdmin && (
+          <label className="text-sm text-gray-600 flex flex-col gap-1">
+            School
+            <select value={filterSchool} onChange={e => setFilterSchool(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm max-w-full">
+              <option value="all">All Schools</option>
+              {schools.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+          </label>
+        )}
+        <label className="text-sm text-gray-600 flex flex-col gap-1">
+          Notification type
+          <select value={filterType} onChange={e => setFilterType(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+            <option value="all">All Types</option>
+            {types.map(type => <option key={type} value={type}>{type === 'unknown' ? 'Unknown type' : type}</option>)}
+          </select>
+        </label>
         <select
+          aria-label="Channel"
           value={filterChannel}
           onChange={e => setFilterChannel(e.target.value)}
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -123,6 +173,7 @@ export default function Notifications() {
           <option value="email">Email Only</option>
         </select>
         <select
+          aria-label="Status"
           value={filterStatus}
           onChange={e => setFilterStatus(e.target.value)}
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -133,6 +184,31 @@ export default function Notifications() {
           <option value="pending">Pending</option>
           <option value="skipped">Skipped</option>
         </select>
+        <label className="text-sm text-gray-600 flex flex-col gap-1">
+          From date (Sydney)
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? 'notification-date-error' : undefined} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+        </label>
+        <label className="text-sm text-gray-600 flex flex-col gap-1">
+          To date (Sydney)
+          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? 'notification-date-error' : undefined} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+        </label>
+        <button onClick={() => {
+          setFilterSchool('all')
+          setFilterType('all')
+          setFilterChannel('all')
+          setFilterStatus('all')
+          setDateFrom('')
+          setDateTo('')
+        }} disabled={activeFilters.length === 0} className="px-3 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50">
+          Clear All Filters
+        </button>
+      </div>
+      {invalidDateRange && <p id="notification-date-error" role="alert" className="text-sm text-red-700 mb-4">From date must be on or before To date.</p>}
+      <div role="status" className="flex flex-wrap gap-2 text-xs text-gray-600 mb-4">
+        {activeFilters.length ? <>
+          <span>Active filters:</span>
+          {activeFilters.map(filter => <span key={filter} className="bg-blue-100 text-blue-700 px-2 py-1 rounded-full">{filter}</span>)}
+        </> : <span>No active filters</span>}
       </div>
 
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
