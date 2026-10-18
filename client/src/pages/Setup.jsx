@@ -452,11 +452,22 @@ export default function Setup() {
 
   // School Admin: save this school's alert-timeout override.
   async function handleSaveSchoolThreshold() {
+    const raw = String(schoolThreshold).trim()
+
+    // The help text says to leave the field blank to use the company default,
+    // so a blank Save does the same as Reset rather than showing an error.
+    if (raw === '') {
+      await handleResetSchoolThreshold()
+      return
+    }
+
     setSchoolThresholdSaving(true)
     setSchoolThresholdError('')
     setSchoolThresholdSuccess(false)
 
-    const parsed = parseInt(schoolThreshold, 10)
+    // parseInt would read 7.5 as 7 and save it, so only plain digits are
+    // accepted. The server checks the same rule.
+    const parsed = /^\d+$/.test(raw) ? Number(raw) : NaN
     if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) {
       setSchoolThresholdError('Timeout must be a whole number between 1 and 1440 minutes.')
       setSchoolThresholdSaving(false)
