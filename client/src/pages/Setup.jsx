@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext'
 import { applyRecipientPhone } from '../utils/routingRecipients'
 
 const EMOJI_OPTIONS = ['🏥', '🔥', '🔒', '⚠️', '🌩️', '🔧', '📢', '🚨', '🛡️', '🌊']
+const ALERT_TYPE_LABEL_PATTERN = /^[A-Za-z ]+$/
 
 // School Admin routing rules are keyed by the alert type label, so options are
 // de-duplicated by label (case-insensitive) to keep one entry per routing rule.
@@ -178,6 +179,7 @@ export default function Setup() {
       setTypeError('Label is required.')
       return
     }
+    if (!ALERT_TYPE_LABEL_PATTERN.test(newType.label.trim())) return setTypeError('Alert type must contain letters only.')
     if (!newType.category) {
       setTypeError('Category is required.')
       return
@@ -198,6 +200,7 @@ export default function Setup() {
 
   const handleSaveType = async (id) => {
     if (!editTypeForm.label.trim()) return
+    if (!ALERT_TYPE_LABEL_PATTERN.test(editTypeForm.label.trim())) return setTypeError('Alert type must contain letters only.')
 
     try {
       const data = await setupAPI.updateAlertType(id, editTypeForm)
