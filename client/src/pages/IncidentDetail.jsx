@@ -367,7 +367,7 @@ export default function IncidentDetail() {
       )}
 
       {/* Help is on the way banner */}
-      {acknowledgedBy.length > 0 && (
+      {status !== 'resolved' && acknowledgedBy.length > 0 && (
         <div className="bg-green-50 border border-green-300 rounded-xl px-5 py-4 mb-4 flex items-start gap-3">
           <span className="text-2xl">✅</span>
           <div>
