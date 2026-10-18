@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { useSchools } from '../context/SchoolsContext'
 import { notificationsAPI } from '../api/client'
 
 const statusStyle = {
@@ -12,6 +13,7 @@ const statusStyle = {
 
 export default function Notifications() {
   const { isCompanyAdmin, isSchoolAdmin, authLoading, userRole } = useAuth()
+  const { schools: configuredSchools } = useSchools()
   const [filterChannel, setFilterChannel] = useState('all')
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterSchool, setFilterSchool] = useState('all')
@@ -61,7 +63,7 @@ export default function Notifications() {
   const emailFailed = visibleNotifications.filter(n => n.email === 'failed').length
 
   const schoolKey = n => n.schoolId ? `id:${n.schoolId}` : n.schoolName ? `name:${n.schoolName}` : 'unknown'
-  const schools = [...new Map(visibleNotifications.map(n => [schoolKey(n), n.schoolName || n.schoolId || 'Unknown school'])).entries()]
+  const schools = configuredSchools.map(school => [`id:${school.id}`, school.name])
     .sort((a, b) => a[1].localeCompare(b[1]))
   const typeKey = n => String(n.type || '').trim().toLowerCase() || 'unknown'
   const types = [...new Set(visibleNotifications.map(typeKey))].sort()

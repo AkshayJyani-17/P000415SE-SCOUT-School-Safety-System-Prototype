@@ -27,6 +27,14 @@ vi.mock('../context/AuthContext', () => ({
   }),
 }))
 
+vi.mock('../context/SchoolsContext', () => ({
+  useSchools: () => ({ schools: [
+    { id: 'a', name: 'Alpha' },
+    { id: 'b', name: 'Beta' },
+    { id: 'c', name: 'Gamma' },
+  ] }),
+}))
+
 vi.mock('../api/client', () => ({
   notificationsAPI: {
     list: vi.fn(() =>
@@ -174,7 +182,6 @@ describe('Notification filtering', () => {
   })
   test('handles unknown fields and matches status within the selected channel', async () => {
     await renderFilters()
-    changeFilter('School', 'unknown')
     changeFilter('Notification type', 'unknown')
     expect(screen.getByText('Missing fields')).toBeInTheDocument()
     changeFilter('Status', 'sent')
