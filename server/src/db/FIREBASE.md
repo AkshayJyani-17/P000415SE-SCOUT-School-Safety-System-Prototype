@@ -73,21 +73,32 @@ Fields:
 ### notifications
 Stores notification delivery records linked to incidents.
 
+One record is written per recipient before anything is sent, then updated as
+each provider accepts, rejects or reports delivery of the message.
+
 Fields:
 - `incidentId`
 - `incidentTitle`
 - `type`
+- `emergencyType`, `location`, `message` — the alert content, kept so a failed message can be retried
 - `schoolId`
 - `schoolName`
 - `recipientName`
 - `recipientEmail`
+- `recipientPhone`
 - `recipientRole`
-- `email`
-- `sms`
+- `email`, `sms` — channel status: `pending`, `sent`, `delivered`, `failed` or `skipped`
+- `emailError`, `smsError` — why the channel failed, or `null`
+- `emailMessageId`, `smsMessageId` — provider message id, used to match delivery receipts
+- `emailReference`, `smsReference` — `<notificationId>#<attempt>` sent with the message and echoed back in receipts
+- `emailAttempts`, `smsAttempts`
+- `emailSentAt`, `smsSentAt`, `emailDeliveredAt`, `smsDeliveredAt`, `emailFailedAt`, `smsFailedAt`
 - `token`
 - `acknowledged`
 - `acknowledgedAt`
 - `timestamp`
+
+Records created before delivery tracking was added only have `email` and `sms`.
 
 ### notificationRecipients
 Stores legacy/demo recipient contacts and school roles for fallback routing.

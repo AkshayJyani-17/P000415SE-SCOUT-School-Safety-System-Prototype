@@ -1,14 +1,36 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useSchools } from '../context/SchoolsContext'
 import { notificationsAPI } from '../api/client'
 
 const statusStyle = {
+  delivered: 'bg-emerald-100 text-emerald-800',
   sent: 'bg-green-100 text-green-700',
   failed: 'bg-red-100 text-red-700',
   pending: 'bg-yellow-100 text-yellow-700',
   skipped: 'bg-gray-100 text-gray-600',
+}
+
+// Receipts normally arrive within seconds, so the list refreshes itself while
+// recent messages are still waiting for one. Older ones are left alone so a
+// provider that never reports back cannot keep the page polling forever.
+export const RECEIPT_POLL_INTERVAL_MS = 20 * 1000
+const RECEIPT_WAIT_WINDOW_MS = 15 * 60 * 1000
+
+const CHANNELS = [
+  { key: 'sms', label: 'SMS' },
+  { key: 'email', label: 'Email' },
+]
+
+function isReached(status) {
+  return status === 'sent' || status === 'delivered'
+}
+
+function isAwaitingReceipt(notification, now) {
+  const age = now - new Date(notification.timestamp).getTime()
+  return age < RECEIPT_WAIT_WINDOW_MS &&
+    CHANNELS.some(({ key }) => notification[key] === 'pending' || notification[key] === 'sent')
 }
 
 export default function Notifications() {
@@ -23,26 +45,56 @@ export default function Notifications() {
   const [notifications, setNotifications] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [retrying, setRetrying] = useState(null)
+  const [retryErrors, setRetryErrors] = useState({})
 
   const canViewNotifications = isCompanyAdmin || isSchoolAdmin
 
-  const fetchNotifications = async () => {
-    setLoading(true)
-    setError(null)
+  const fetchNotifications = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoading(true)
+      setError(null)
+    }
     try {
       const data = await notificationsAPI.list()
       setNotifications(data)
+      if (silent) setError(null)
     } catch (err) {
       setError(err.message || 'Failed to fetch notifications')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     if (!canViewNotifications) return
     fetchNotifications()
-  }, [canViewNotifications])
+  }, [canViewNotifications, fetchNotifications])
+
+  useEffect(() => {
+    if (!canViewNotifications) return undefined
+    if (!notifications.some(notification => isAwaitingReceipt(notification, Date.now()))) return undefined
+
+    const timer = setTimeout(() => fetchNotifications({ silent: true }), RECEIPT_POLL_INTERVAL_MS)
+    return () => clearTimeout(timer)
+  }, [canViewNotifications, notifications, fetchNotifications])
+
+  const handleRetry = async (id, channel) => {
+    const key = `${id}:${channel}`
+    setRetrying(key)
+    setRetryErrors(current => ({ ...current, [key]: null }))
+
+    try {
+      const updated = await notificationsAPI.retry(id, channel)
+      setNotifications(current => current.map(notification =>
+        notification.id === id ? { ...notification, ...updated } : notification
+      ))
+    } catch (err) {
+      setRetryErrors(current => ({ ...current, [key]: err.message || 'Retry failed. Please try again.' }))
+    } finally {
+      setRetrying(null)
+    }
+  }
 
   if (authLoading || userRole === null) {
     return (
@@ -57,7 +109,8 @@ export default function Notifications() {
   }
 
   const visibleNotifications = notifications
-  const totalSent = visibleNotifications.filter(n => n.sms === 'sent' || n.email === 'sent').length
+  const totalSent = visibleNotifications.filter(n => isReached(n.sms) || isReached(n.email)).length
+  const totalDelivered = visibleNotifications.filter(n => n.sms === 'delivered' || n.email === 'delivered').length
   const totalFailed = visibleNotifications.filter(n => n.sms === 'failed' || n.email === 'failed').length
   const smsFailed = visibleNotifications.filter(n => n.sms === 'failed').length
   const emailFailed = visibleNotifications.filter(n => n.email === 'failed').length
@@ -118,7 +171,7 @@ export default function Notifications() {
           </p>
         </div>
         <button
-          onClick={fetchNotifications}
+          onClick={() => fetchNotifications()}
           disabled={loading}
           className="px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:bg-gray-400 transition-colors"
         >
@@ -134,7 +187,7 @@ export default function Notifications() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <SummaryCard label="Total Sent" value={totalSent} icon="📥" color="text-green-600" />
-        <SummaryCard label="Failed" value={totalFailed} icon="❌" color="text-red-600" />
+        <SummaryCard label="Delivery Confirmed" value={totalDelivered} icon="✅" color="text-emerald-700" />
         <SummaryCard label="SMS Failed" value={smsFailed} icon="📱" color="text-orange-600" />
         <SummaryCard label="Email Failed" value={emailFailed} icon="📧" color="text-orange-600" />
       </div>
@@ -142,7 +195,7 @@ export default function Notifications() {
       {totalFailed > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-6">
           <p className="text-sm text-red-800">
-            <strong>{totalFailed} notification(s)</strong> failed to deliver. Check the log below and follow up manually if needed.
+            <strong>{totalFailed} notification(s)</strong> failed to deliver. The reason is shown on each record below. Retry them, or follow up manually if needed.
           </p>
         </div>
       )}
@@ -181,6 +234,7 @@ export default function Notifications() {
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
         >
           <option value="all">All Statuses</option>
+          <option value="delivered">Delivered</option>
           <option value="sent">Sent</option>
           <option value="failed">Failed</option>
           <option value="pending">Pending</option>
@@ -236,16 +290,29 @@ export default function Notifications() {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-800">{n.incidentTitle}</p>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    👤 {n.recipientName} · 📧 {n.recipientEmail}
+                    👤 {n.recipientName}
+                    {n.recipientEmail ? ` · 📧 ${n.recipientEmail}` : ''}
+                    {n.recipientPhone ? ` · 📱 ${n.recipientPhone}` : ''}
                   </p>
                   <p className="text-xs text-gray-400 mt-0.5">
                     🕐 {formatTimestamp(n.timestamp)}
                     {n.schoolName ? ` - ${n.schoolName}` : ''}
                   </p>
                 </div>
-                <div className="flex flex-col gap-1.5 shrink-0 items-end">
-                  <StatusBadge label="SMS" status={n.sms} />
-                  <StatusBadge label="Email" status={n.email} />
+                <div className="flex flex-col gap-2 shrink-0 items-end max-w-[18rem]">
+                  {CHANNELS.map(({ key, label }) => (
+                    <ChannelStatus
+                      key={key}
+                      label={label}
+                      status={n[key]}
+                      error={n[`${key}Error`]}
+                      deliveredAt={n[`${key}DeliveredAt`]}
+                      retrying={retrying === `${n.id}:${key}`}
+                      retryDisabled={retrying !== null}
+                      retryError={retryErrors[`${n.id}:${key}`]}
+                      onRetry={() => handleRetry(n.id, key)}
+                    />
+                  ))}
                 </div>
               </div>
             ))
@@ -282,6 +349,32 @@ function formatTimestamp(timestamp) {
     dateStyle: 'medium',
     timeStyle: 'short',
   })
+}
+
+function ChannelStatus({ label, status, error, deliveredAt, retrying, retryDisabled, retryError, onRetry }) {
+  return (
+    <div className="flex flex-col items-end gap-1 text-right">
+      <StatusBadge label={label} status={status} />
+      {status === 'delivered' && deliveredAt && (
+        <p className="text-xs text-emerald-700">Delivered {formatTimestamp(deliveredAt)}</p>
+      )}
+      {status === 'failed' && (
+        <>
+          {error && <p className="text-xs text-red-700 break-words">{error}</p>}
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={retryDisabled}
+            aria-label={`Retry ${label}`}
+            className="text-xs px-2 py-0.5 border border-red-300 text-red-700 rounded hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {retrying ? 'Retrying...' : 'Retry'}
+          </button>
+        </>
+      )}
+      {retryError && <p role="alert" className="text-xs text-red-700 break-words">{retryError}</p>}
+    </div>
+  )
 }
 
 function StatusBadge({ label, status = 'pending' }) {

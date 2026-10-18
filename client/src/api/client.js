@@ -75,6 +75,12 @@ export const incidentAPI = {
 
 export const notificationsAPI = {
   list: () => request('/notifications').then(data => data.notifications ?? data),
+  // Resends one failed channel ('email' or 'sms') and returns the updated record.
+  retry: (id, channel) =>
+    request(`/notifications/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+      body: JSON.stringify({ channel }),
+    }).then(data => data.notification),
 }
 
 // Schools are role-scoped by the backend: a Company Admin receives every

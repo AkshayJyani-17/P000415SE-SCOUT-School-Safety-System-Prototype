@@ -8,8 +8,9 @@ function summariseDelivery(delivery) {
   if (!delivery) return null
 
   const results = Array.isArray(delivery.results) ? delivery.results : []
+  const reached = status => status === 'sent' || status === 'delivered'
   const sent = results.filter(
-    result => result.emailStatus === 'sent' || result.smsStatus === 'sent'
+    result => reached(result.emailStatus) || reached(result.smsStatus)
   ).length
 
   return { sent, total: results.length }

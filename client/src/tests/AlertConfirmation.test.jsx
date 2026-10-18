@@ -252,6 +252,21 @@ describe('Confirmation after a dashboard quick alert', () => {
     expect(confirmation.getByText(/some recipients could not be reached/i)).toBeInTheDocument()
   })
 
+  test('counts a recipient whose delivery is already confirmed as notified', async () => {
+    notifyResponse = {
+      ...FULL_DELIVERY,
+      results: [
+        { recipientName: 'A', emailStatus: 'failed', smsStatus: 'delivered' },
+        { recipientName: 'B', emailStatus: 'sent', smsStatus: 'skipped' },
+      ],
+    }
+    await fireGeneralQuickAction()
+
+    const confirmation = within(await screen.findByRole('dialog'))
+    expect(confirmation.getByText(/^alert sent$/i)).toBeInTheDocument()
+    expect(confirmation.getByText('2 of 2 notified')).toBeInTheDocument()
+  })
+
   test('warns when nobody could be reached, and says the alert is still recorded', async () => {
     notifyResponse = NO_DELIVERY
     await fireGeneralQuickAction()

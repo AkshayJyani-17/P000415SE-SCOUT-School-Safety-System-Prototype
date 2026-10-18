@@ -7,10 +7,11 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "seed:demo": "node src/db/seedDemoData.js",
-    "test": "node tests/incidents.test.js && node tests/incidents.integration.test.js && node tests/setup.test.js && node tests/setup.integration.test.js && node tests/schools.test.js && node tests/schools.integration.test.js && node tests/no-hardcoded-schools.test.js && node tests/settings.test.js && node tests/quickTestAlerts.test.js && node tests/analytics.test.js && node tests/analytics.advanced.test.js && node tests/analytics.scope.test.js && node tests/analytics.integration.test.js && node tests/quickAlerts.test.js && node tests/quickAlerts.integration.test.js",
+    "test": "node tests/incidents.test.js && node tests/incidents.integration.test.js && node tests/setup.test.js && node tests/setup.integration.test.js && node tests/schools.test.js && node tests/schools.integration.test.js && node tests/no-hardcoded-schools.test.js && node tests/settings.test.js && node tests/quickTestAlerts.test.js && node tests/analytics.test.js && node tests/analytics.advanced.test.js && node tests/analytics.scope.test.js && node tests/analytics.integration.test.js && node tests/quickAlerts.test.js && node tests/quickAlerts.integration.test.js && node tests/notificationProviders.test.js && node tests/notifications.integration.test.js",
     "test:quick-alerts": "node tests/quickAlerts.test.js && node tests/quickAlerts.integration.test.js",
     "test:analytics": "node tests/analytics.test.js && node tests/analytics.advanced.test.js && node tests/analytics.scope.test.js && node tests/analytics.integration.test.js",
     "test:schools": "node tests/schools.test.js && node tests/schools.integration.test.js && node tests/no-hardcoded-schools.test.js",
+    "test:notifications": "node tests/notificationProviders.test.js && node tests/notifications.integration.test.js",
     "test:unit": "node tests/incidents.test.js",
     "test:integration": "node tests/incidents.integration.test.js",
     "seed:emulator": "node src/db/seedEmulatorData.js",
@@ -27,13 +28,11 @@
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
     "bcryptjs": "^2.4.3",
-    "clicksend": "^5.1.7",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "firebase-admin": "^13.8.0",
     "jsonwebtoken": "^9.0.2",
-    "nodemailer": "^8.0.9",
     "twilio": "^5.13.1"
   },
   "devDependencies": {

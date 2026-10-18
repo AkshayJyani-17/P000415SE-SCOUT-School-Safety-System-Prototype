@@ -90,10 +90,13 @@ The backend uses:
 - `FIREBASE_SERVICE_ACCOUNT_JSON`
 - `FIREBASE_PROJECT_ID`
 - `BACKEND_URL`
-- `GMAIL_USER`
-- `GMAIL_APP_PASSWORD`
+- `BREVO_API_KEY`
+- `BREVO_SENDER_EMAIL`
+- `BREVO_SENDER_NAME`
 - `CLICKSEND_USERNAME`
 - `CLICKSEND_API_KEY`
+- `SMS_DEFAULT_COUNTRY`
+- `NOTIFICATION_WEBHOOK_SECRET`
 
 Recommended local values:
 
@@ -103,15 +106,36 @@ BACKEND_URL=http://localhost:5000
 JWT_SECRET=replace_with_local_secret
 FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 FIREBASE_PROJECT_ID=scout-safety-prod
-GMAIL_USER=your_gmail_address@gmail.com
-GMAIL_APP_PASSWORD=your_gmail_app_password
+BREVO_API_KEY=your_brevo_api_key
+BREVO_SENDER_EMAIL=your_verified_sender@example.com
+BREVO_SENDER_NAME=SCOUT Safety System
 CLICKSEND_USERNAME=your_clicksend_username
 CLICKSEND_API_KEY=your_clicksend_api_key
+SMS_DEFAULT_COUNTRY=AU
+NOTIFICATION_WEBHOOK_SECRET=replace_with_a_long_random_string
 ```
 
 Use `FIREBASE_SERVICE_ACCOUNT_PATH` for local development with a JSON file in `server/`. Use `FIREBASE_SERVICE_ACCOUNT_JSON` for hosted environments such as Render where the service account JSON is stored as an environment variable.
 
-Notification delivery uses Gmail SMTP for email and ClickSend for SMS. The old SendGrid and Twilio variables are no longer used by the notification route.
+### Alert Notifications
+
+Triggered alerts are sent by email through the Brevo API and by SMS through ClickSend. Both are called over HTTPS, so they work on Render's free tier, which blocks outbound SMTP. The old Gmail, SendGrid and Twilio variables are no longer used.
+
+Every message is recorded in the `notifications` collection before it is sent, and each channel moves through `pending` → `sent` → `delivered`, or to `failed` with the reason in `emailError` / `smsError`. `skipped` means the recipient is not set up for that channel. The Notifications page shows these statuses, refreshes itself while recent messages are waiting for a receipt, and lets admins retry a failed channel.
+
+One-time setup for a deployment:
+
+1. **Brevo:** create an API key under SMTP & API, and verify the sender address under Senders & IP. Set `BREVO_API_KEY` and `BREVO_SENDER_EMAIL`.
+2. **ClickSend:** set `CLICKSEND_USERNAME` and `CLICKSEND_API_KEY`. Messages are sent from ClickSend's shared numbers. Trial accounts can only text numbers verified in the ClickSend dashboard.
+3. **Delivery receipts:** set `BACKEND_URL` to the public backend URL and choose a long random `NOTIFICATION_WEBHOOK_SECRET`. Then register these webhook URLs:
+   - Brevo → Transactional → Settings → Webhooks, events *Delivered*, *Hard bounce*, *Blocked*, *Invalid email* and *Error*:
+     `https://<backend>/api/notifications/webhooks/brevo?secret=<NOTIFICATION_WEBHOOK_SECRET>`
+   - ClickSend → Messaging Settings → Delivery Reports Rules → add an SMS rule with the *URL* action:
+     `https://<backend>/api/notifications/webhooks/clicksend?secret=<NOTIFICATION_WEBHOOK_SECRET>`
+
+Without step 3, messages still send and show as `sent`, but they never move to `delivered`.
+
+Run the notification tests with `npm run test:notifications` from `server/`.
 
 ### Important Notes
 

@@ -114,6 +114,13 @@ function formatDuration(minutes) {
   return remainingHours > 0 ? `${days} ${dayLabel} ${remainingHours} hr` : `${days} ${dayLabel}`
 }
 
+function deliveryBadgeStyle(status) {
+  if (status === 'sent' || status === 'delivered') return 'bg-green-100 text-green-700'
+  if (status === 'failed') return 'bg-red-100 text-red-700'
+  if (status === 'skipped') return 'bg-gray-100 text-gray-600'
+  return 'bg-yellow-100 text-yellow-700'
+}
+
 export default function IncidentDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -667,10 +674,10 @@ export default function IncidentDetail() {
               <div key={idx} className="flex items-center justify-between text-sm">
                 <span className="text-gray-700">{n.recipientName}</span>
                 <div className="flex gap-2">
-                  <span className={`text-xs px-2 py-0.5 rounded ${n.sms === 'sent' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                  <span className={`text-xs px-2 py-0.5 rounded ${deliveryBadgeStyle(n.sms)}`}>
                     SMS {n.sms}
                   </span>
-                  <span className={`text-xs px-2 py-0.5 rounded ${n.email === 'sent' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                  <span className={`text-xs px-2 py-0.5 rounded ${deliveryBadgeStyle(n.email)}`}>
                     Email {n.email}
                   </span>
                 </div>
