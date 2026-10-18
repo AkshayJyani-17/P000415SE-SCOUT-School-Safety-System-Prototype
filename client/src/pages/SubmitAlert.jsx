@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { incidentAPI, schoolAPI, setupAPI } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import AlertConfirmation from '../components/AlertConfirmation'
 import QuickTestAlerts from '../components/QuickTestAlerts'
 
 const FALLBACK_ALERT_TYPES = [
@@ -42,6 +43,8 @@ export default function SubmitAlert() {
   const [isPreviewing, setIsPreviewing] = useState(false)
   const [recipients, setRecipients] = useState([])
   const [schools, setSchools] = useState([])
+  // The submitted alert, held so its confirmation can be read before leaving.
+  const [submitted, setSubmitted] = useState(null)
   const { currentUser, isSchoolAdmin, isCompanyAdmin } = useAuth()
 
   useEffect(() => {
@@ -109,7 +112,9 @@ export default function SubmitAlert() {
   }
 
   const handleSubmit = async () => {
-    if (isSubmitting || !isPreviewing) return
+    // "submitted" is checked as well, otherwise pressing the button again
+    // after the confirmation appears would save the same alert twice.
+    if (isSubmitting || !isPreviewing || submitted) return
     setIsSubmitting(true)
     try {
       const createdIncident = await incidentAPI.create({
@@ -120,13 +125,25 @@ export default function SubmitAlert() {
           'Unknown',
         triggeredById: currentUser?.uid || null,
       })
-      navigate(`/incidents/${createdIncident.id}`)
+      // Submitting records the alert but does not notify anyone, so the
+      // confirmation reports the configured recipients rather than claiming
+      // a delivery that never happened.
+      setSubmitted({ incident: createdIncident, recipientsConfigured: recipients.length })
     } catch (error) {
       console.error('Failed to submit alert:', error)
       setErrors({ submit: 'Failed to submit alert. Please try again.' })
     } finally {
       setIsSubmitting(false)
     }
+  }
+
+  // Clears the confirmation and the form, ready for another alert.
+  const handleSubmitAnother = () => {
+    setSubmitted(null)
+    setIsPreviewing(false)
+    setRecipients([])
+    setErrors({})
+    setForm({ type: '', priority: '', title: '', description: '', location: '' })
   }
 
   if (isPreviewing) return (
@@ -155,8 +172,17 @@ export default function SubmitAlert() {
           <button type="button" onClick={() => { setIsPreviewing(false); setErrors({}) }} className="flex-1 py-3 border rounded-lg">Edit alert</button>
           <button type="button" onClick={() => navigate('/dashboard')} className="flex-1 py-3 border rounded-lg">Cancel</button>
         </div>
-        <button type="button" onClick={handleSubmit} disabled={isSubmitting} className="w-full py-3 bg-red-600 text-white font-medium rounded-lg disabled:opacity-50">{isSubmitting ? 'Submitting...' : 'Confirm and submit alert'}</button>
+        <button type="button" onClick={handleSubmit} disabled={isSubmitting || Boolean(submitted)} className="w-full py-3 bg-red-600 text-white font-medium rounded-lg disabled:opacity-50">{isSubmitting ? 'Submitting...' : 'Confirm and submit alert'}</button>
       </div>
+
+      {submitted && (
+        <AlertConfirmation
+          incident={submitted.incident}
+          recipientsConfigured={submitted.recipientsConfigured}
+          onDismiss={handleSubmitAnother}
+          dismissLabel="Submit another"
+        />
+      )}
     </div>
   )
 

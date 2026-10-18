@@ -6,9 +6,14 @@ import { useAuth } from '../context/AuthContext'
 import { applyRecipientPhone } from '../utils/routingRecipients'
 
 const EMOJI_OPTIONS = ['🏥', '🔥', '🔒', '⚠️', '🌩️', '🔧', '📢', '🚨', '🛡️', '🌊']
+const ALERT_TYPE_LABEL_PATTERN = /^[A-Za-z ]+$/
 
 // School Admin routing rules are keyed by the alert type label, so options are
 // de-duplicated by label (case-insensitive) to keep one entry per routing rule.
+// The backend refuses two alert types with the same name, so this should
+// never find a duplicate in new data. It stays as a guard for anything saved
+// before that check existed, because the dropdown keys each option by name
+// and two options with the same key would break the list.
 function buildAlertTypeOptions(alertTypes) {
   const seen = new Set()
   const options = []
@@ -174,6 +179,7 @@ export default function Setup() {
       setTypeError('Label is required.')
       return
     }
+    if (!ALERT_TYPE_LABEL_PATTERN.test(newType.label.trim())) return setTypeError('Alert type must contain letters only.')
     if (!newType.category) {
       setTypeError('Category is required.')
       return
@@ -194,6 +200,7 @@ export default function Setup() {
 
   const handleSaveType = async (id) => {
     if (!editTypeForm.label.trim()) return
+    if (!ALERT_TYPE_LABEL_PATTERN.test(editTypeForm.label.trim())) return setTypeError('Alert type must contain letters only.')
 
     try {
       const data = await setupAPI.updateAlertType(id, editTypeForm)
@@ -448,11 +455,22 @@ export default function Setup() {
 
   // School Admin: save this school's alert-timeout override.
   async function handleSaveSchoolThreshold() {
+    const raw = String(schoolThreshold).trim()
+
+    // The help text says to leave the field blank to use the company default,
+    // so a blank Save does the same as Reset rather than showing an error.
+    if (raw === '') {
+      await handleResetSchoolThreshold()
+      return
+    }
+
     setSchoolThresholdSaving(true)
     setSchoolThresholdError('')
     setSchoolThresholdSuccess(false)
 
-    const parsed = parseInt(schoolThreshold, 10)
+    // parseInt would read 7.5 as 7 and save it, so only plain digits are
+    // accepted. The server checks the same rule.
+    const parsed = /^\d+$/.test(raw) ? Number(raw) : NaN
     if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) {
       setSchoolThresholdError('Timeout must be a whole number between 1 and 1440 minutes.')
       setSchoolThresholdSaving(false)

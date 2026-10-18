@@ -13,12 +13,22 @@ function makeDoc(id, data) {
   }
 }
 
-function createTestDb({ incidents = {}, notifications = {}, users = {}, schools = {}, notificationRouting = {}, notificationRecipients = {} } = {}) {
+function createTestDb({ incidents = {}, notifications = {}, users = {}, schools = {}, notificationRouting = {}, notificationRecipients = {}, deletedIncidents = {}, settings = {}, schoolSettings = {} } = {}) {
   // schoolService caches the school list in a module-level store, so it has to
   // be cleared whenever a test swaps in a fresh database.
   require('../src/schoolCache').resetSchoolCache()
 
+  // GET /api/incidents caches its list the same way, for 30 seconds, keyed by
+  // role and school. Without clearing it one test can be served the previous
+  // test's incidents.
+  require('../src/incidentListCache').invalidateIncidentListCache()
+
   const incidentStore = new Map(Object.entries(incidents).map(([id, value]) => [id, { ...value }]))
+  const deletedIncidentStore = new Map(Object.entries(deletedIncidents).map(([id, value]) => [id, { ...value }]))
+  // The delete rule resolves the overdue threshold the same way GET /settings
+  // does, so the fake needs the settings document and per-school overrides.
+  const settingsStore = new Map(Object.entries(settings).map(([id, value]) => [id, { ...value }]))
+  const schoolSettingsStore = new Map(Object.entries(schoolSettings).map(([id, value]) => [id, { ...value }]))
   const notificationStore = new Map(Object.entries(notifications).map(([id, value]) => [id, { ...value }]))
   const userStore = new Map(Object.entries(users).map(([id, value]) => [id, { ...value }]))
   const schoolStore = new Map(Object.entries(schools).map(([id, value]) => [id, { ...value }]))
@@ -66,8 +76,17 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
           async get() {
             return { docs: [...incidentStore.entries()].map(([id, record]) => makeDoc(id, record)) }
           },
+          // GET /api/incidents/stream subscribes instead of fetching, through
+          // watchIncidents. Firing once with the current contents is enough to
+          // test what the stream sends.
+          onSnapshot(onNext) {
+            onNext({ docs: [...incidentStore.entries()].map(([id, record]) => makeDoc(id, record)) })
+            return () => {}
+          },
           doc(id) {
             return {
+              id,
+              __store: incidentStore,
               async get() {
                 return makeDoc(id, incidentStore.get(id))
               },
@@ -77,6 +96,9 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
                   throw new Error(`Incident ${id} not found`)
                 }
                 incidentStore.set(id, { ...existing, ...data })
+              },
+              async delete() {
+                incidentStore.delete(id)
               },
             }
           },
@@ -89,6 +111,40 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
                 return makeDoc(id, incidentStore.get(id))
               },
             }
+          },
+        }
+      }
+
+      if (name === 'schoolSettings') {
+        return {
+          doc(id) {
+            return {
+              id,
+              async get() {
+                return makeDoc(id, schoolSettingsStore.get(id))
+              },
+            }
+          },
+        }
+      }
+
+      if (name === 'deletedIncidents') {
+        return {
+          doc(id) {
+            return {
+              id,
+              __store: deletedIncidentStore,
+              async get() {
+                return makeDoc(id, deletedIncidentStore.get(id))
+              },
+              async set(data) {
+                deletedIncidentStore.set(id, { ...data })
+              },
+            }
+          },
+          async get() {
+            const docs = [...deletedIncidentStore.entries()].map(([id, record]) => makeDoc(id, record))
+            return { docs, empty: docs.length === 0 }
           },
         }
       }
@@ -151,6 +207,32 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
       throw new Error(`Unexpected collection: ${name}`)
     },
 
+    doc(path) {
+      return {
+        id: path,
+        async get() {
+          return makeDoc(path, settingsStore.get(path))
+        },
+      }
+    },
+
+    // Mirrors the subset of the Firestore batch API the routes actually use.
+    batch() {
+      const operations = []
+
+      return {
+        set(ref, data) {
+          operations.push(() => ref.__store.set(ref.id, { ...data }))
+        },
+        delete(ref) {
+          operations.push(() => ref.__store.delete(ref.id))
+        },
+        async commit() {
+          for (const apply of operations) apply()
+        },
+      }
+    },
+
     async runTransaction(callback) {
       const transaction = {
         async get(ref) {
@@ -172,6 +254,9 @@ function createTestDb({ incidents = {}, notifications = {}, users = {}, schools 
 
     stores: {
       incidents: incidentStore,
+      deletedIncidents: deletedIncidentStore,
+      settings: settingsStore,
+      schoolSettings: schoolSettingsStore,
       notifications: notificationStore,
       users: userStore,
       schools: schoolStore,
@@ -668,5 +753,568 @@ test('POST /api/incidents marks a normal alert as not a test', async () => {
 
     assert.equal(response.status, 201)
     assert.equal((await response.json()).isTest, false)
+  })
+})
+
+// ── DELETE /api/incidents/:id ─────────────────────────────────────────────────
+// Deletion is a soft delete: the record moves to deletedIncidents with who,
+// when and why. Only test alerts or resolved incidents are eligible.
+
+const DELETE_USERS = {
+  'company-uid': { name: 'Company Admin', email: 'company@scout.edu', role: 'companyAdmin' },
+  'school-admin-uid': { name: 'Riley Principal', email: 'principal@school.edu', role: 'schoolAdmin', schoolId: 'school_alpha' },
+  'staff-uid': { name: 'Staff User', email: 'staff@school.edu', role: 'staff', schoolId: 'school_alpha' },
+}
+
+function deletableDb(overrides = {}) {
+  return createTestDb({
+    users: DELETE_USERS,
+    incidents: {
+      resolvedAlpha: {
+        title: 'Duplicate fire report',
+        type: 'fire',
+        incidentNumber: 'INC-0007',
+        status: 'resolved',
+        schoolId: 'school_alpha',
+        schoolName: 'Alpha High',
+        createdAt: '2026-04-29T10:00:00.000Z',
+      },
+      ...overrides,
+    },
+  })
+}
+
+// A drill raised by the School Admin, the only thing that role may delete.
+function ownDrillRecord() {
+  return {
+    title: 'TEST: Fire alert',
+    type: 'fire',
+    status: 'triggered',
+    isTest: true,
+    schoolId: 'school_alpha',
+    triggeredById: 'school-admin-uid',
+    triggeredByEmail: 'principal@school.edu',
+    createdAt: '2026-04-29T10:00:00.000Z',
+  }
+}
+
+function deleteRequest(baseUrl, id, token, body = { reasonCode: 'duplicate', reason: 'Logged twice' }) {
+  return fetch(`${baseUrl}/api/incidents/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+test('DELETE /api/incidents/:id lets a Company Admin delete a resolved incident', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token')
+    assert.equal(response.status, 200)
+
+    const payload = await response.json()
+    assert.equal(payload.success, true)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), false)
+    assert.equal(fakeDb.stores.deletedIncidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id stores who deleted it, when and why', async () => {
+  fakeDb = deletableDb({ ownDrill: ownDrillRecord() })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'ownDrill', 'school-token', {
+      reasonCode: 'test_or_drill',
+      reason: 'Finished the drill',
+    })
+    assert.equal(response.status, 200)
+
+    const record = fakeDb.stores.deletedIncidents.get('ownDrill')
+    assert.equal(record.deletionReasonCode, 'test_or_drill')
+    assert.equal(record.deletionReason, 'Finished the drill')
+    assert.equal(record.deletedBy.email, 'principal@school.edu')
+    assert.equal(record.deletedBy.role, 'schoolAdmin')
+    assert.ok(record.deletedAt, 'deletedAt should be recorded')
+    // The original incident data is retained for audit.
+    assert.equal(record.title, 'TEST: Fire alert')
+  })
+})
+
+test('DELETE /api/incidents/:id lets a School Admin delete a test alert they raised', async () => {
+  fakeDb = deletableDb({ ownDrill: ownDrillRecord() })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'ownDrill', 'school-token', {
+      reasonCode: 'test_or_drill',
+      reason: '',
+    })
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('ownDrill'), false)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 when a School Admin deletes a drill someone else raised', async () => {
+  fakeDb = deletableDb({
+    othersDrill: { ...ownDrillRecord(), triggeredById: 'another-admin-uid', triggeredByEmail: 'other@school.edu' },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'othersDrill', 'school-token', {
+      reasonCode: 'test_or_drill',
+      reason: '',
+    })
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('othersDrill'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 when a School Admin deletes a real incident at their own school', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    // Resolved and at their school, so the old rule allowed this. A school
+    // must not be able to erase its own genuine records.
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'school-token')
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+    assert.equal(fakeDb.stores.deletedIncidents.size, 0)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 when a School Admin deletes their own real incident', async () => {
+  fakeDb = deletableDb({
+    ownRealIncident: {
+      title: 'Injury on the oval',
+      status: 'resolved',
+      schoolId: 'school_alpha',
+      triggeredById: 'school-admin-uid',
+      createdAt: '2026-04-29T10:00:00.000Z',
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    // Raising it does not grant the right to remove it; only drills qualify.
+    const response = await deleteRequest(baseUrl, 'ownRealIncident', 'school-token')
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('ownRealIncident'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id lets a Company Admin delete a drill raised by a School Admin', async () => {
+  fakeDb = deletableDb({ ownDrill: ownDrillRecord() })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'ownDrill', 'company-token', {
+      reasonCode: 'test_or_drill',
+      reason: '',
+    })
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('ownDrill'), false)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 when a School Admin targets another school', async () => {
+  fakeDb = deletableDb({
+    resolvedBeta: {
+      title: 'Resolved at another school',
+      status: 'resolved',
+      schoolId: 'school_beta',
+      createdAt: '2026-04-29T10:00:00.000Z',
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedBeta', 'school-token')
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('resolvedBeta'), true)
+    assert.equal(fakeDb.stores.deletedIncidents.size, 0)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 403 for staff', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'staff-token')
+    assert.equal(response.status, 403)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+    assert.equal(fakeDb.stores.deletedIncidents.size, 0)
+  })
+})
+
+test('DELETE /api/incidents/:id deletes a test alert whatever its status', async () => {
+  fakeDb = deletableDb({
+    testDrill: {
+      title: 'Lockdown drill',
+      status: 'triggered',
+      isTest: true,
+      schoolId: 'school_alpha',
+      createdAt: '2026-04-29T10:00:00.000Z',
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'testDrill', 'company-token', {
+      reasonCode: 'test_or_drill',
+      reason: '',
+    })
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('testDrill'), false)
+  })
+})
+
+const minutesAgo = minutes => new Date(Date.now() - minutes * 60 * 1000).toISOString()
+
+// SCRUM-43. These four used to expect a 409. The time check that produced it
+// also lived on the screen, reading a different school's setting, so the screen
+// offered deletes this endpoint then refused. Nothing here judges how recent an
+// alert is any more. The screen warns from the responseWindow field instead and
+// asks the admin to tick a box, which cannot fall out of step with the server.
+for (const liveStatus of ['acknowledged', 'in-progress']) {
+  test(`DELETE /api/incidents/:id lets a Company Admin delete a live ${liveStatus} incident`, async () => {
+    fakeDb = deletableDb({
+      liveIncident: {
+        title: 'Live emergency',
+        status: liveStatus,
+        schoolId: 'school_alpha',
+        createdAt: minutesAgo(600),
+      },
+    })
+
+    await withServer(createApp(), async baseUrl => {
+      const response = await deleteRequest(baseUrl, 'liveIncident', 'company-token')
+      assert.equal(response.status, 200)
+      assert.equal(fakeDb.stores.incidents.has('liveIncident'), false)
+      // The audit copy is what protects the response record now, not a refusal.
+      assert.equal(fakeDb.stores.deletedIncidents.has('liveIncident'), true)
+    })
+  })
+}
+
+test('DELETE /api/incidents/:id deletes an alert still inside the overdue window', async () => {
+  fakeDb = deletableDb({
+    freshAlert: {
+      title: 'Just triggered',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(2),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'freshAlert', 'company-token')
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('freshAlert'), false)
+  })
+})
+
+test('DELETE /api/incidents/:id deletes an overdue alert nobody acknowledged', async () => {
+  fakeDb = deletableDb({
+    abandoned: {
+      title: 'asdsfgfg',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(60),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'abandoned', 'company-token')
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('abandoned'), false)
+    assert.equal(fakeDb.stores.deletedIncidents.has('abandoned'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id deletes an overdue alert someone acknowledged', async () => {
+  fakeDb = deletableDb({
+    answered: {
+      title: 'Overdue but answered',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(60),
+      acknowledgedBy: [{ name: 'Riley Principal', acknowledgedAt: minutesAgo(30) }],
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'answered', 'company-token')
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('answered'), false)
+    // The acknowledgement is kept with the audit copy, not lost.
+    assert.equal(
+      fakeDb.stores.deletedIncidents.get('answered').acknowledgedBy[0].name,
+      'Riley Principal'
+    )
+  })
+})
+
+test('DELETE /api/incidents/:id no longer refuses because of a school threshold override', async () => {
+  fakeDb = createTestDb({
+    users: DELETE_USERS,
+    // This school allows 24 hours, so the old rule refused a two hour old
+    // alert. The screen meanwhile compared it against the company default of
+    // 15 minutes and offered the delete anyway, which is the bug.
+    settings: { 'settings/global': { overdueThresholdMinutes: 15 } },
+    schoolSettings: { school_alpha: { overdueThresholdMinutes: 1440 } },
+    incidents: {
+      recentForSchool: {
+        title: 'Two hours old',
+        status: 'triggered',
+        schoolId: 'school_alpha',
+        createdAt: minutesAgo(120),
+      },
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'recentForSchool', 'company-token')
+    assert.equal(response.status, 200)
+    assert.equal(fakeDb.stores.incidents.has('recentForSchool'), false)
+  })
+})
+
+// SCRUM-43. The screen used to work the response window out itself, from
+// whichever threshold its own page had loaded. These pin down that the server
+// now sends it, using each incident's own school, so the screen has nothing
+// left to get wrong.
+
+function windowDb(incidents) {
+  return createTestDb({
+    users: DELETE_USERS,
+    settings: { 'settings/global': { overdueThresholdMinutes: 15 } },
+    schoolSettings: { school_alpha: { overdueThresholdMinutes: 60 } },
+    incidents,
+  })
+}
+
+async function fetchIncidents(baseUrl) {
+  const response = await fetch(`${baseUrl}/api/incidents`, {
+    headers: { Authorization: 'Bearer company-token' },
+  })
+
+  return (await response.json()).incidents
+}
+
+test('GET /api/incidents sends each school its own response window', async () => {
+  fakeDb = windowDb({
+    atAlpha: {
+      title: 'Alpha alert',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(30),
+    },
+    atBeta: {
+      title: 'Beta alert',
+      status: 'triggered',
+      schoolId: 'school_beta',
+      createdAt: minutesAgo(30),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const incidents = await fetchIncidents(baseUrl)
+    const alpha = incidents.find(incident => incident.id === 'atAlpha')
+    const beta = incidents.find(incident => incident.id === 'atBeta')
+
+    // Alpha allows 60 minutes, so a 30 minute old alert is still inside it.
+    assert.equal(alpha.responseWindow.windowMinutes, 60)
+    assert.equal(alpha.responseWindow.responseMayBeUnderway, true)
+
+    // Beta has no override, so the company default of 15 minutes applies and
+    // the same age is outside the window.
+    assert.equal(beta.responseWindow.windowMinutes, 15)
+    assert.equal(beta.responseWindow.responseMayBeUnderway, false)
+  })
+})
+
+test('GET /api/incidents reports how old each alert is', async () => {
+  fakeDb = windowDb({
+    atAlpha: {
+      title: 'Alpha alert',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(30),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const [incident] = await fetchIncidents(baseUrl)
+    assert.equal(incident.responseWindow.ageMinutes, 30)
+  })
+})
+
+test('GET /api/incidents never says a drill has a response underway', async () => {
+  fakeDb = windowDb({
+    drill: {
+      title: 'Lockdown drill',
+      status: 'triggered',
+      isTest: true,
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(5),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const [incident] = await fetchIncidents(baseUrl)
+
+    // It is well inside the window, but nobody is responding to a drill.
+    assert.equal(incident.responseWindow.windowMinutes, 60)
+    assert.equal(incident.responseWindow.responseMayBeUnderway, false)
+  })
+})
+
+test('GET /api/incidents never says a resolved alert has a response underway', async () => {
+  fakeDb = windowDb({
+    done: {
+      title: 'Dealt with',
+      status: 'resolved',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(5),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const [incident] = await fetchIncidents(baseUrl)
+    assert.equal(incident.responseWindow.responseMayBeUnderway, false)
+  })
+})
+
+// The dashboard replaces its incidents with whatever the stream pushes, so a
+// stream payload without a response window leaves the delete dialog there with
+// nothing to warn from. The first version of this fix missed that.
+test('GET /api/incidents/stream sends the response window too', async () => {
+  fakeDb = windowDb({
+    atAlpha: {
+      title: 'Alpha alert',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(30),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const controller = new AbortController()
+
+    const response = await fetch(`${baseUrl}/api/incidents/stream`, {
+      headers: { Authorization: 'Bearer company-token' },
+      signal: controller.signal,
+    })
+
+    const reader = response.body.getReader()
+    let buffered = ''
+    let payload = null
+
+    // Read until the first data frame arrives, past any keepalive comments.
+    while (payload === null) {
+      const { value, done } = await reader.read()
+      if (done) break
+
+      buffered += Buffer.from(value).toString('utf8')
+      const match = buffered.match(/^data: (.*)$/m)
+      if (match) payload = JSON.parse(match[1])
+    }
+
+    controller.abort()
+
+    const [incident] = payload.incidents
+    assert.equal(incident.responseWindow.windowMinutes, 60)
+    assert.equal(incident.responseWindow.ageMinutes, 30)
+    assert.equal(incident.responseWindow.responseMayBeUnderway, true)
+  })
+})
+
+test('GET /api/incidents/:id sends the response window for the school that owns it', async () => {
+  fakeDb = windowDb({
+    atAlpha: {
+      title: 'Alpha alert',
+      status: 'triggered',
+      schoolId: 'school_alpha',
+      createdAt: minutesAgo(30),
+    },
+  })
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await fetch(`${baseUrl}/api/incidents/atAlpha`, {
+      headers: { Authorization: 'Bearer company-token' },
+    })
+    const { incident } = await response.json()
+
+    assert.equal(incident.responseWindow.windowMinutes, 60)
+    assert.equal(incident.responseWindow.ageMinutes, 30)
+    assert.equal(incident.responseWindow.responseMayBeUnderway, true)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 400 when no reason is given', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token', {})
+    assert.equal(response.status, 400)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 400 for an unrecognised reason code', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token', {
+      reasonCode: 'because_i_said_so',
+      reason: 'No',
+    })
+    assert.equal(response.status, 400)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id requires detail when the reason is "other"', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token', {
+      reasonCode: 'other',
+      reason: '   ',
+    })
+    assert.equal(response.status, 400)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id rejects an over-long reason', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token', {
+      reasonCode: 'duplicate',
+      reason: 'x'.repeat(501),
+    })
+    assert.equal(response.status, 400)
+    assert.equal(fakeDb.stores.incidents.has('resolvedAlpha'), true)
+  })
+})
+
+test('DELETE /api/incidents/:id returns 404 for an unknown incident', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    const response = await deleteRequest(baseUrl, 'does-not-exist', 'company-token')
+    assert.equal(response.status, 404)
+  })
+})
+
+test('a deleted incident no longer appears in the incident list', async () => {
+  fakeDb = deletableDb()
+
+  await withServer(createApp(), async baseUrl => {
+    await deleteRequest(baseUrl, 'resolvedAlpha', 'company-token')
+
+    const response = await fetch(`${baseUrl}/api/incidents`, {
+      headers: { Authorization: 'Bearer company-token' },
+    })
+    const payload = await response.json()
+    assert.equal(payload.incidents.some(incident => incident.id === 'resolvedAlpha'), false)
   })
 })

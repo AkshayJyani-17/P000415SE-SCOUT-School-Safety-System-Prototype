@@ -2,6 +2,7 @@ const express = require('express')
 const admin = require('firebase-admin')
 const { docToObject, formatTimestamp, getDb, snapshotToArray } = require('../db/firebase')
 const { getSchoolName } = require('../services/schoolService')
+const { findSchoolRoutingRule } = require('../services/alertRouting')
 const { invalidateAnalyticsCache } = require('../analyticsCache')
 const {
   getCachedIncidentList,
@@ -10,6 +11,7 @@ const {
 } = require('../incidentListCache')
 
 const { watchIncidents } = require('../incidentStream')
+const { getEffectiveOverdueThresholdMinutes } = require('./settings')
 
 const router = express.Router()
 
@@ -155,6 +157,92 @@ function canUpdateIncidentStatus(profile, incident) {
   return canReadIncident(profile, incident) && (isCompanyAdmin(profile.role) || isSchoolAdmin(profile.role))
 }
 
+// Deletion reasons are stored as a code so the audit trail stays analysable
+// instead of becoming a free-text dump.
+const DELETION_REASON_CODES = ['duplicate', 'test_or_drill', 'logged_in_error', 'wrong_school', 'other']
+
+const MAX_DELETION_REASON_LENGTH = 500
+
+const DELETE_NOT_PERMITTED_MESSAGE =
+  'School Admins can only delete test alerts they raised themselves.'
+
+function isOwnIncident(profile, incident) {
+  if (profile.uid && incident.triggeredById) {
+    return incident.triggeredById === profile.uid
+  }
+
+  if (profile.email && incident.triggeredByEmail) {
+    return String(incident.triggeredByEmail).toLowerCase() === String(profile.email).toLowerCase()
+  }
+
+  return false
+}
+
+// Who may remove a record at all, before considering its state:
+//   Company Admin: anything, at any school.
+//   School Admin: only test alerts they raised themselves, so a school
+//     cannot quietly erase genuine incident records of its own. School
+//     Admins are the ones who run drills, so this still lets them clear
+//     up after themselves.
+function canRoleDeleteIncident(profile, incident) {
+  if (isCompanyAdmin(profile.role)) return true
+  if (!isSchoolAdmin(profile.role)) return false
+
+  return incident.isTest === true && isOwnIncident(profile, incident)
+}
+
+function incidentAgeMinutes(incident) {
+  const raw = incident.createdAt
+  if (!raw) return 0
+
+  const created = raw.toDate ? raw.toDate() : new Date(raw)
+  if (Number.isNaN(created.getTime())) return 0
+
+  return Math.floor((Date.now() - created.getTime()) / 60000)
+}
+
+// How long the incident's own school allows for a response, and whether this
+// incident is still inside that time.
+//
+// This sum used to be done on the screen as well, using whichever threshold
+// the viewer's own page had loaded, while here it used the incident's school.
+// The two could disagree about the same incident, so the screen offered a
+// delete the server then refused. It is now worked out here only, where each
+// school's setting is actually known, and sent out with the incident.
+//
+// It no longer decides anything. An admin may delete any incident their role
+// allows. The screen uses this to warn them first.
+function buildResponseWindow(incident, windowMinutes) {
+  const ageMinutes = incidentAgeMinutes(incident)
+
+  return {
+    windowMinutes,
+    ageMinutes,
+    // Nobody is working on a drill, a resolved incident or an archived one, so
+    // in those cases there is nothing to warn about.
+    responseMayBeUnderway:
+      incident.isTest !== true &&
+      incident.status !== 'resolved' &&
+      incident.status !== 'archived' &&
+      ageMinutes <= windowMinutes,
+  }
+}
+
+// One settings lookup per school rather than one per incident, because a
+// company wide list can hold hundreds of incidents across a few schools.
+async function buildResponseWindows(incidents) {
+  const schoolIds = [...new Set(incidents.map(incident => incident.schoolId || null))]
+
+  const entries = await Promise.all(
+    schoolIds.map(async schoolId => [
+      schoolId,
+      await getEffectiveOverdueThresholdMinutes(schoolId),
+    ])
+  )
+
+  return new Map(entries)
+}
+
 function appendUniqueActor(list, profile, timestamp, timeField) {
   const existing = Array.isArray(list) ? list : []
   const alreadyRecorded = existing.some(actor =>
@@ -195,7 +283,7 @@ function toIsoTimestamp(value) {
 }
 
 //converts a raw Firestore incident into the response shape used by the frontend
-function toIncidentResponse(incident) {
+function toIncidentResponse(incident, responseWindow = null) {
   return {
     id: String(incident.id),
     incidentNumber: incident.incidentNumber || null,
@@ -217,6 +305,9 @@ function toIncidentResponse(incident) {
     assignedUserEmails: Array.isArray(incident.assignedUserEmails) ? incident.assignedUserEmails : [],
     description: incident.description || '',
     isTest: incident.isTest === true,
+    // See buildResponseWindow. Null on the paths that never open a delete
+    // dialog, such as the archived list and the create response.
+    responseWindow,
     acknowledgedBy: incident.acknowledgedBy || [],  // ← added
     inProgressBy: incident.inProgressBy || [],
     notifications: [],
@@ -235,10 +326,15 @@ router.get('/', verifyToken, async (req, res, next) => {
       setCachedIncidentList(profile, visibleIncidents)
     }
 
+    const responseWindows = await buildResponseWindows(visibleIncidents)
+
     //sorts incidents from newest to oldest based on createdAt, updatedAt, or timestamp and converts to response format
     const incidents = visibleIncidents
       .sort((left, right) => getSortValue(right) - getSortValue(left))
-      .map(toIncidentResponse)
+      .map(incident => toIncidentResponse(
+        incident,
+        buildResponseWindow(incident, responseWindows.get(incident.schoolId || null))
+      ))
     //sends the result back as JSON
     res.json({ incidents })
   } catch (error) {
@@ -268,9 +364,26 @@ router.get('/stream', verifyToken, async (req, res, next) => {
     res.flushHeaders()
     heartbeat = setInterval(() => res.write(': keepalive\n\n'), 15000)
     renewal = setTimeout(close, 60000)
-    unsubscribe = watchIncidents(getDb(), profile, records => {
+    // The dashboard replaces its incidents with whatever this stream pushes, so
+    // the response window has to be sent here too. Without it the delete dialog
+    // on the dashboard has nothing to warn from.
+    let latestSnapshot = 0
+
+    unsubscribe = watchIncidents(getDb(), profile, async records => {
       if (closed) return
-      const incidents = records.sort((a, b) => getSortValue(b) - getSortValue(a)).map(toIncidentResponse)
+
+      // Each push is a whole snapshot, so a slow settings lookup must not let
+      // an older snapshot land after a newer one.
+      const snapshotNumber = ++latestSnapshot
+      const responseWindows = await buildResponseWindows(records)
+      if (closed || snapshotNumber !== latestSnapshot) return
+
+      const incidents = records
+        .sort((a, b) => getSortValue(b) - getSortValue(a))
+        .map(incident => toIncidentResponse(
+          incident,
+          buildResponseWindow(incident, responseWindows.get(incident.schoolId || null))
+        ))
       res.write(`data: ${JSON.stringify({ incidents })}\n\n`)
     }, close)
     if (closed) unsubscribe()
@@ -326,10 +439,12 @@ router.get('/:id', verifyToken, async (req, res, next) => {
       sms: notification.sms || notification.smsStatus || 'pending',      // ← fixed
       email: notification.email || notification.emailStatus || 'pending', // ← fixed
     }))
+    const windowMinutes = await getEffectiveOverdueThresholdMinutes(incident.schoolId)
+
     //returns the incident details
     res.json({
       incident: {
-        ...toIncidentResponse(incident),
+        ...toIncidentResponse(incident, buildResponseWindow(incident, windowMinutes)),
         notifications,
       },
     })
@@ -348,10 +463,9 @@ router.get('/preview/recipients', verifyToken, async (req, res, next) => {
     if (!schoolId || !type) return res.status(400).json({ error: 'School and alert type are required.' })
 
     const db = getDb()
-    const snapshot = await db.collection('notificationRouting').where('schoolId', '==', schoolId).get()
-    const rule = snapshot.docs.map(doc => doc.data()).find(item =>
-      item.active !== false && String(item.alertType || '').toLowerCase().replace(/\s+/g, '_') === type.toLowerCase()
-    )
+    // Shared with the real send, so the preview cannot promise people the
+    // send would never reach. See services/alertRouting.js.
+    const rule = await findSchoolRoutingRule(db, schoolId, type)
     let recipients = []
     if (rule && Array.isArray(rule.recipients)) {
       recipients = rule.recipients.filter(item => item.email || item.phone)
@@ -561,6 +675,94 @@ router.post('/:id/review-comment', verifyToken, async (req, res, next) => {
     const updatedIncident = docToObject(updatedDoc)
     invalidateIncidentListCache()
     res.json({ success: true, incident: toIncidentResponse(updatedIncident) })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// DELETE /api/incidents/:id
+// Company Admins may delete any incident. School Admins may only delete test
+// alerts they raised themselves, so a school cannot quietly erase genuine
+// records of its own. Staff cannot delete at all: a reporter must not be able
+// to erase their own report.
+//
+// This is a soft delete. The record is copied into deletedIncidents with who
+// deleted it, when and why, then removed from incidents. This is the same move
+// the archiver performs for aged out incidents. Deleted records are not
+// readable through the app.
+router.delete('/:id', verifyToken, async (req, res, next) => {
+  try {
+    const profile = await getUserProfile(req.user)
+
+    if (!isCompanyAdmin(profile.role) && !isSchoolAdmin(profile.role)) {
+      return res.status(403).json({ error: 'Only admins can delete incidents.' })
+    }
+
+    const db = getDb()
+    const docRef = db.collection('incidents').doc(req.params.id)
+    const doc = await docRef.get()
+    const incident = docToObject(doc)
+
+    if (!incident) {
+      return res.status(404).json({ error: 'Incident not found.' })
+    }
+
+    // Reused so a School Admin is held to their own school here exactly as
+    // they are everywhere else in this file.
+    if (!canReadIncident(profile, incident)) {
+      return res.status(403).json({ error: 'You do not have permission to delete this incident.' })
+    }
+
+    if (!canRoleDeleteIncident(profile, incident)) {
+      return res.status(403).json({ error: DELETE_NOT_PERMITTED_MESSAGE })
+    }
+
+    // There is deliberately no time check here. One used to sit here and
+    // another on the screen, reading different settings, so the screen offered
+    // deletes this endpoint then refused with a 409. The screen now warns from
+    // the response window sent with the incident and asks the admin to
+    // confirm, which cannot fall out of step with anything.
+    const { reasonCode, reason } = req.body || {}
+
+    if (!DELETION_REASON_CODES.includes(reasonCode)) {
+      return res.status(400).json({ error: 'A valid deletion reason is required.' })
+    }
+
+    const detail = typeof reason === 'string' ? reason.trim() : ''
+
+    if (reasonCode === 'other' && !detail) {
+      return res.status(400).json({ error: 'Please describe the reason for deleting this incident.' })
+    }
+
+    if (detail.length > MAX_DELETION_REASON_LENGTH) {
+      return res.status(400).json({ error: `Reason must be ${MAX_DELETION_REASON_LENGTH} characters or fewer.` })
+    }
+
+    const now = new Date().toISOString()
+    const batch = db.batch()
+
+    batch.set(db.collection('deletedIncidents').doc(doc.id), {
+      ...doc.data(),
+      deletedAt: now,
+      deletionReasonCode: reasonCode,
+      deletionReason: detail,
+      deletedBy: {
+        uid: profile.uid || null,
+        name: profile.name || null,
+        email: profile.email || null,
+        role: profile.role || null,
+      },
+    })
+    batch.delete(docRef)
+
+    await batch.commit()
+
+    // Without these the incident keeps showing in the list and in dashboard
+    // counts, which are both served from caches.
+    invalidateIncidentListCache()
+    invalidateAnalyticsCache()
+
+    res.json({ success: true, id: doc.id })
   } catch (error) {
     next(error)
   }

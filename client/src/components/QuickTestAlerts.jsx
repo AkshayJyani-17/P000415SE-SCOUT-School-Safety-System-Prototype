@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { incidentAPI, setupAPI } from '../api/client'
+import AlertConfirmation from '../components/AlertConfirmation'
 
 // Quick test alerts let a School Admin fire a pre-configured emergency alert in two
 // clicks (pick a type, then confirm) instead of filling in the full Alert Testing form.
@@ -134,17 +134,11 @@ export default function QuickTestAlerts({ locations = [] }) {
       {error && !pendingType && <p role="alert" className="text-xs text-red-600 mt-3">{error}</p>}
 
       {lastTest && (
-        <div className="mt-4 border border-green-200 bg-green-50 rounded-lg px-3 py-3">
-          <p className="text-sm font-semibold text-green-900">{lastTest.typeLabel} test alert sent</p>
-          <p className="text-xs text-green-800 mt-0.5">
-            It is listed under Incidents with a TEST badge and is left out of Analytics.
-          </p>
-          {lastTest.id && (
-            <Link to={`/incidents/${lastTest.id}`} className="text-xs font-medium text-green-900 underline mt-2 inline-block">
-              View test incident{lastTest.incidentNumber ? ` ${lastTest.incidentNumber}` : ''}
-            </Link>
-          )}
-        </div>
+        <AlertConfirmation
+          incident={lastTest}
+          note={`This was a ${lastTest.typeLabel} drill. It is listed under Incidents with a TEST badge and is left out of Analytics.`}
+          onDismiss={() => setLastTest(null)}
+        />
       )}
 
       {pendingType && (

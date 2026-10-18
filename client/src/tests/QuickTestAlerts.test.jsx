@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import SubmitAlert from '../pages/SubmitAlert'
@@ -121,9 +121,12 @@ describe('Quick test alerts on the Alert Testing page', () => {
       location: 'Main Building',
       description: expect.stringContaining('For testing and review purposes only'),
     })
-    // Two clicks in total: the type button, then Send test alert.
-    expect(await screen.findByText('Fire test alert sent')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /View test incident INC-0007/ })).toHaveAttribute('href', '/incidents/inc-1')
+    // The shared confirmation reports the outcome and names the drill.
+    const confirmation = within(await screen.findByRole('dialog'))
+    expect(confirmation.getByText(/alert logged/i)).toBeInTheDocument()
+    expect(confirmation.getByText('INC-0007')).toBeInTheDocument()
+    expect(confirmation.getByText(/Fire drill/i)).toBeInTheDocument()
+    expect(confirmation.getByRole('link', { name: /view alert details/i })).toHaveAttribute('href', '/incidents/inc-1')
   })
 
   test('shows an error and keeps the page usable when sending fails', async () => {

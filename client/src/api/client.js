@@ -68,10 +68,19 @@ export const incidentAPI = {
     request(`/incidents/${id}/review-flag`, { method: 'PATCH', body: JSON.stringify({ reviewRequired, comment }) }),
   addReviewComment: (id, comment) =>
     request(`/incidents/${id}/review-comment`, { method: 'POST', body: JSON.stringify({ comment }) }),
+  // Soft delete. The backend keeps an audit copy; it is not restorable here.
+  remove: (id, { reasonCode, reason }) =>
+    request(`/incidents/${id}`, { method: 'DELETE', body: JSON.stringify({ reasonCode, reason }) }),
 }
 
 export const notificationsAPI = {
   list: () => request('/notifications').then(data => data.notifications ?? data),
+  // Resends one failed channel ('email' or 'sms') and returns the updated record.
+  retry: (id, channel) =>
+    request(`/notifications/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+      body: JSON.stringify({ channel }),
+    }).then(data => data.notification),
 }
 
 // Schools are role-scoped by the backend: a Company Admin receives every

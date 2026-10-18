@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getIncidentById, incidentAPI, settingsAPI } from '../api/client'
+import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
+import {
+  canRoleDeleteIncident,
+  deleteViewerFrom,
+} from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 
 const progressSteps = [
@@ -109,10 +114,19 @@ function formatDuration(minutes) {
   return remainingHours > 0 ? `${days} ${dayLabel} ${remainingHours} hr` : `${days} ${dayLabel}`
 }
 
+function deliveryBadgeStyle(status) {
+  if (status === 'sent' || status === 'delivered') return 'bg-green-100 text-green-700'
+  if (status === 'failed') return 'bg-red-100 text-red-700'
+  if (status === 'skipped') return 'bg-gray-100 text-gray-600'
+  return 'bg-yellow-100 text-yellow-700'
+}
+
 export default function IncidentDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { currentUser, userRole, isAdmin, isSchoolAdmin, authLoading } = useAuth()
+  const auth = useAuth()
+  const { currentUser, userRole, isAdmin, isSchoolAdmin, authLoading } = auth
+  const deleteViewer = deleteViewerFrom(auth)
   const [incident, setIncident] = useState(null)
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(true)
@@ -130,6 +144,9 @@ export default function IncidentDetail() {
 
   // Overdue threshold
   const [overdueThresholdMinutes, setOverdueThresholdMinutes] = useState(15)
+
+  // Delete (soft) state. The dialog owns the reason and request state.
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
 
   // Review flag state
   const [showFlagForm, setShowFlagForm] = useState(false)
@@ -357,7 +374,7 @@ export default function IncidentDetail() {
       )}
 
       {/* Help is on the way banner */}
-      {acknowledgedBy.length > 0 && (
+      {status !== 'resolved' && acknowledgedBy.length > 0 && (
         <div className="bg-green-50 border border-green-300 rounded-xl px-5 py-4 mb-4 flex items-start gap-3">
           <span className="text-2xl">✅</span>
           <div>
@@ -657,10 +674,10 @@ export default function IncidentDetail() {
               <div key={idx} className="flex items-center justify-between text-sm">
                 <span className="text-gray-700">{n.recipientName}</span>
                 <div className="flex gap-2">
-                  <span className={`text-xs px-2 py-0.5 rounded ${n.sms === 'sent' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                  <span className={`text-xs px-2 py-0.5 rounded ${deliveryBadgeStyle(n.sms)}`}>
                     SMS {n.sms}
                   </span>
-                  <span className={`text-xs px-2 py-0.5 rounded ${n.email === 'sent' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                  <span className={`text-xs px-2 py-0.5 rounded ${deliveryBadgeStyle(n.email)}`}>
                     Email {n.email}
                   </span>
                 </div>
@@ -733,6 +750,34 @@ export default function IncidentDetail() {
         <div className="text-center text-sm text-gray-400 py-3">
           This incident has been archived.
         </div>
+      )}
+
+      {/* Delete incident, admins only. Staff are excluded so a reporter
+          cannot erase their own report. */}
+      {canRoleDeleteIncident({ ...found, status }, deleteViewer) && (
+        <div className="mt-6 border-t border-gray-200 pt-5">
+          <h2 className="text-sm font-semibold text-gray-700 mb-1">Delete this incident</h2>
+          <p className="text-xs text-gray-500 mb-3">
+            Removes the incident from the incident log, dashboard counts and analytics. A copy is
+            kept for audit but cannot be restored from the app. If staff may still be responding,
+            the confirmation box says so before anything is deleted.
+          </p>
+          <button
+            type="button"
+            onClick={() => setShowDeleteDialog(true)}
+            className="px-4 py-2 border border-red-300 text-red-700 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors"
+          >
+            Delete Incident
+          </button>
+        </div>
+      )}
+
+      {showDeleteDialog && (
+        <DeleteIncidentDialog
+          incident={{ ...found, status }}
+          onCancel={() => setShowDeleteDialog(false)}
+          onDeleted={() => navigate('/incidents')}
+        />
       )}
 
     </div>

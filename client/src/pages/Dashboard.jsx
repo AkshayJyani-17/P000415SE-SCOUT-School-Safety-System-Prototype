@@ -7,6 +7,9 @@ import ShortcutCard from '../components/ShortcutCard'
 import QuickViewStrip from '../components/QuickViewStrip'
 import SchoolAdminStatus from '../components/SchoolAdminStatus'
 import { incidentAPI, settingsAPI } from '../api/client'
+import DeleteIncidentButton from '../components/DeleteIncidentButton'
+import DeleteIncidentDialog from '../components/DeleteIncidentDialog'
+import { deleteViewerFrom } from '../components/incidentDeletion'
 import { useAuth } from '../context/AuthContext'
 import { useSchools } from '../context/SchoolsContext'
 
@@ -119,18 +122,24 @@ function formatDuration(minutes) {
 export default function Dashboard() {
   const navigate = useNavigate()
 
+  const auth = useAuth()
+
   const {
     currentUser,
     userRole,
     isCompanyAdmin,
     isSchoolAdmin,
     isStaff,
-  } = useAuth()
+  } = auth
+
+  const deleteViewer = deleteViewerFrom(auth)
 
   const { schools } = useSchools()
 
   const [incidents, setIncidents] = useState([])
   const [sortOrder, setSortOrder] = useState('newest')
+  // The incident awaiting delete confirmation, or null when the dialog is shut.
+  const [incidentToDelete, setIncidentToDelete] = useState(null)
 
   const [selectedSchool, setSelectedSchool] = useState(
     () => sessionStorage.getItem('dashboardSelectedSchool') || 'all'
@@ -341,7 +350,14 @@ export default function Dashboard() {
             />
           </div>
 
-          <QuickViewStrip incidents={dashboardIncidents} />
+          <QuickViewStrip
+          incidents={dashboardIncidents}
+          schoolName={
+            selectedSchool === 'all'
+              ? 'All Schools'
+              : schools.find(s => s.id === selectedSchool)?.name || 'Selected School'
+            }
+          />
         </>
       )}
 
@@ -379,6 +395,17 @@ export default function Dashboard() {
               </span>
             )}
           </div>
+
+
+          <p className="text-xs text-gray-600 mb-3">
+            Source: Incident records · Category: Triggered alerts
+            {isCompanyAdmin ? ' · Selected school' : ' · Your school'}
+            {' · '}
+            Metric: Alerts awaiting acknowledgement.
+            Overdue means the alert has exceeded the configured
+            acknowledgement threshold.
+          </p>
+
 
           <div className="space-y-2">
             {unacked.map((incident) => {
@@ -429,6 +456,12 @@ export default function Dashboard() {
                     </p>
                   </div>
 
+                  {incident.isTest && (
+                    <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 font-semibold whitespace-nowrap">
+                      TEST
+                    </span>
+                  )}
+
                   <span
                     className={`text-xs px-2 py-0.5 rounded ${
                       priorityColors[incident.priority]
@@ -450,6 +483,12 @@ export default function Dashboard() {
                       ⏰ Overdue
                     </span>
                   )}
+
+                  <DeleteIncidentButton
+                    incident={incident}
+                    viewer={deleteViewer}
+                    onRequestDelete={setIncidentToDelete}
+                  />
                 </div>
               )
             })}
@@ -498,6 +537,12 @@ export default function Dashboard() {
             </button>
           </div>
         </div>
+        <p className="text-xs text-gray-600 mb-3">
+          Source: Incident records · Category: Today's non-triggered incidents
+          {isCompanyAdmin ? ' · Selected school' : ' · Your school'}
+          {' · '}
+          Sorted by the selected order.
+        </p>
 
         <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100 overflow-hidden">
           {recentToShow.length === 0 ? (
@@ -528,6 +573,12 @@ export default function Dashboard() {
                   </p>
                 </div>
 
+                {incident.isTest && (
+                  <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 font-semibold whitespace-nowrap">
+                    TEST
+                  </span>
+                )}
+
                 <span
                   className={`text-xs px-2 py-0.5 rounded ${
                     priorityColors[incident.priority]
@@ -544,6 +595,12 @@ export default function Dashboard() {
                   {incident.status}
                 </span>
 
+                <DeleteIncidentButton
+                  incident={incident}
+                  viewer={deleteViewer}
+                  onRequestDelete={setIncidentToDelete}
+                />
+
                 <span className="text-gray-400">
                   &gt;
                 </span>
@@ -552,6 +609,40 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      )}
+
+      <section
+        aria-label="Dashboard legend"
+        className="mt-6 rounded-lg border border-gray-200 bg-white p-4"
+      >
+        <h2 className="text-sm font-semibold text-gray-900 mb-2">
+          Dashboard Legend
+        </h2>
+
+        <p className="text-xs text-gray-600">
+          <strong>Triggered:</strong> Awaiting acknowledgement ·{' '}
+          <strong>Acknowledged:</strong> Alert acknowledged ·{' '}
+          <strong>In progress:</strong> Response underway ·{' '}
+          <strong>Resolved:</strong> Incident resolved ·{' '}
+          <strong>Archived:</strong> Incident archived
+        </p>
+
+        <p className="text-xs text-gray-600 mt-2">
+          <strong>Critical / High / Medium / Low:</strong> Incident priority levels.
+          {' '}<strong>TEST:</strong> Test incident, not a live emergency.
+        </p>
+      </section>
+
+
+      {incidentToDelete && (
+        <DeleteIncidentDialog
+          incident={incidentToDelete}
+          onCancel={() => setIncidentToDelete(null)}
+          onDeleted={deletedId => {
+            setIncidents(current => current.filter(record => record.id !== deletedId))
+            setIncidentToDelete(null)
+          }}
+        />
       )}
     </div>
   )
