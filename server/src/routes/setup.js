@@ -236,6 +236,21 @@ router.delete('/alert-types/:id', verifyToken, requireCompanyAdmin, async (req, 
 
 // ── Locations ─────────────────────────────────────────────────────────────────
 
+
+function normaliseLocationName(label) {
+  return String(label || '').trim().toLowerCase()
+}
+
+async function findLocationWithSameName(db, label, exceptId = null) {
+  const snapshot = await db.collection('locations').get()
+  const wanted = normaliseLocationName(label)
+
+  return snapshot.docs.find(
+    doc =>
+      doc.id !== exceptId &&
+      normaliseLocationName(doc.data()?.label) === wanted
+  ) || null
+}
 // GET /api/setup/locations
 // Any authenticated user can read (SubmitAlert needs this)
 router.get('/locations', verifyToken, async (req, res, next) => {
@@ -255,6 +270,15 @@ router.post('/locations', verifyToken, requireCompanyAdmin, async (req, res, nex
   try {
     const { label } = req.body
     if (!label?.trim()) return res.status(400).json({ error: 'Label is required.' })
+  const db = getDb()
+  const clash = await findLocationWithSameName(db, label)
+
+  if (clash) {
+    return res.status(409).json({
+      error: 'This location already exists.',
+    })
+  }
+
 
     const now = new Date().toISOString()
     const docRef = await getDb().collection('locations').add({
@@ -280,6 +304,18 @@ router.put('/locations/:id', verifyToken, requireCompanyAdmin, async (req, res, 
     const ref = getDb().collection('locations').doc(req.params.id)
     const doc = await ref.get()
     if (!doc.exists) return res.status(404).json({ error: 'Location not found.' })
+  const clash = await findLocationWithSameName(
+    getDb(),
+    label,
+    req.params.id
+  )
+
+  if (clash) {
+    return res.status(409).json({
+      error: 'This location already exists.',
+  } )
+  }
+
 
     await ref.update({
       label: label.trim(),
